@@ -10,6 +10,7 @@ import json
 import random
 import asyncio
 import time
+from datetime import datetime, timedelta
 
 # ==========================================
 # ⚙️ 設定エリア
@@ -21,6 +22,9 @@ GUILD_ID = 1526575335460573315
 ROLE_ID = 1526589486207733770   
 CLIENT_ID = '1526464758927200326' 
 REDIRECT_URI = 'https://chillzone-5oxh.onrender.com/callback'
+
+# 📂 【新規追加】専用個室を作るカテゴリのID（ここにコピーしたIDを入れてください）
+CATEGORY_ID = 1526720938517856297  
 
 # ==========================================
 # 💾 データ保存用システム（JSON）
@@ -59,7 +63,10 @@ intents.members = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 vc_start_times = {}
+room_counter = 1      # カフェルームの番号管理
+active_rooms = {}     # 作成されたカスタム部屋の管理 { チャンネルID: { "owner_id": 所有者ID, "created_at": 作成時間 } }
 
+# 🔑 認証用View
 class VerificationView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -73,9 +80,56 @@ class VerificationView(View):
         btn = Button(label="アカウント認証を始める", style=discord.ButtonStyle.link, url=oauth_url)
         self.add_item(btn)
 
+# 🚪 個室作成用View
+class PrivateRoomView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @discord.ui.button(label="自分の作業部屋を開放", style=discord.ButtonStyle.success, custom_id="create_private_room")
+    async def create_room_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        global room_counter
+        guild = interaction.guild
+        category = guild.get_channel(CATEGORY_ID)
+        
+        if not category or not isinstance(category, discord.CategoryChannel):
+            await interaction.response.send_message("❌ カテゴリの設定が正しくありません。管理者に連絡してください。", ephemeral=True)
+            return
+            
+        # すでに部屋を作っているかチェック
+        for r_id, info in active_rooms.items():
+            if info["owner_id"] == interaction.user.id:
+                existing_room = guild.get_channel(r_id)
+                if existing_room:
+                    await interaction.response.send_message(f"❌ すでにあなたの部屋 {existing_room.mention} が存在します。", ephemeral=True)
+                    return
+
+        # 部屋番号付きの名前を決定（丸数字）
+        numbers = ["⓪", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"]
+        num_str = numbers[room_counter] if room_counter < len(numbers) else f" {room_counter}"
+        room_name = f"カフェルーム{num_str}"
+        room_counter += 1
+        
+        # 権限の設定（作った人と管理者だけが見えるようにする）
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False), # 全員は見えない
+            interaction.user: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True), # 作った人は入れる
+            guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True) # Botは操作可能
+        }
+        
+        # ボイスチャンネル作成
+        new_channel = await guild.create_voice_channel(name=room_name, category=category, overwrites=overwrites)
+        active_rooms[new_channel.id] = {
+            "owner_id": interaction.user.id,
+            "created_at": datetime.now()
+        }
+        
+        await interaction.response.send_message(f"✨ 専用の作業部屋を作成しました！➔ {new_channel.mention}\n※退出するか、24時間経過すると自動で削除されます。", ephemeral=True)
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
+    bot.add_view(PrivateRoomView()) # ボタンを常時監視
+    bot.loop.create_task(check_room_expiry()) # 24時間監視タスクの始動
     try:
         synced = await bot.tree.sync()
         print(f"スラッシュコマンドを {len(synced)} 個同期しました。")
@@ -87,6 +141,8 @@ async def on_voice_state_update(member, before, after):
     if member.bot:
         return
     user_id = str(member.id)
+    
+    # --- 通常の作業時間記録システム ---
     if before.channel is None and after.channel is not None:
         vc_start_times[user_id] = time.time()
     elif before.channel is not None and after.channel is None:
@@ -105,15 +161,63 @@ async def on_voice_state_update(member, before, after):
                 save_stats(stats)
                 print(f"【記録】{member.name} が {minutes_earned} 分作業しました。")
 
+    # --- 【新規】カスタム個室の自動削除システム ---
+    if before.channel and before.channel.id in active_rooms:
+        # 部屋から誰もいなくなったか確認
+        if len(before.channel.members) == 0:
+            try:
+                channel_id = before.channel.id
+                await before.channel.delete()
+                active_rooms.pop(channel_id, None)
+                print(f"【削除】誰もいなくなったため、{before.channel.name} を削除しました。")
+            except Exception as e:
+                print(f"部屋の自動削除に失敗: {e}")
+
+# ⏰ 【新規追加】24時間経過した部屋を自動消去する常時監視システム
+async def check_room_expiry():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        now = datetime.now()
+        to_delete = []
+        
+        for r_id, info in list(active_rooms.items()):
+            # 作成から24時間が経過しているか判定
+            if now - info["created_at"] >= timedelta(hours=24):
+                to_delete.append(r_id)
+                
+        for r_id in to_delete:
+            guild = bot.get_guild(GUILD_ID)
+            if guild:
+                channel = guild.get_channel(r_id)
+                if channel:
+                    try:
+                        await channel.delete()
+                        print(f"【時間切れ削除】24時間経過したため {channel.name} を削除しました。")
+                    except Exception as e:
+                        print(f"時間切れ削除に失敗: {e}")
+            active_rooms.pop(r_id, None)
+            
+        await asyncio.sleep(60) # 1分ごとにチェック
+
 @bot.tree.command(name="setup_verify", description="認証パネルを設置します")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_verify(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="🔒 𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 . 認証パネル",
+        title="🔒 𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 ... 認証パネル",
         description="下のボタンを押して、Webサイトから認証を完了してください。\n認証が成功すると、自動的にロールが付与されます。",
         color=0xff9966
     )
     await interaction.response.send_message(embed=embed, view=VerificationView())
+
+@bot.tree.command(name="setup_room", description="個室作成パネルを設置します")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_room(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🚪 自分専用の作業部屋を開放",
+        description="下のボタンを押すと、あなたと管理者だけが見える専用ボイスチャンネル『カフェルーム①〜』が自動作成されます。\n\n・勉強が終わって全員が退出すると自動で消滅します。\n・作成から24時間が経過すると自動で強制削除されます。",
+        color=0xe8a7a1
+    )
+    await interaction.response.send_message(embed=embed, view=PrivateRoomView())
 
 @bot.tree.command(name="status", description="自分の作業時間とレベルを確認します")
 async def status(interaction: discord.Interaction):
@@ -138,7 +242,7 @@ async def ranking(interaction: discord.Interaction):
         await interaction.response.send_message("まだ誰の作業時間も記録されていません！")
         return
     sorted_stats = sorted(stats.items(), key=lambda x: x[1]["total_minutes"], reverse=True)[:10]
-    embed = discord.Embed(title="🏆 𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 . 作業時間ランキング", color=0xe8a7a1)
+    embed = discord.Embed(title="🏆 𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 . 作業時間ランキング", color=0xe8a7a1)
     ranking_text = ""
     medal = ["🥇", "🥈", "🥉"]
     for i, (uid, data) in enumerate(sorted_stats):
@@ -160,7 +264,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 . Official</title>
+    <title>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 . Official</title>
     <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;700&display=swap" rel="stylesheet">
     <style>
         :root { --bg-color: #f7f5f0; --main-color: #e8a7a1; --text-color: #4a4a4a; --card-bg: #ffffff; --accent-color: #ebd3c8; }
@@ -190,7 +294,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <header>
-        <h1>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 .</h1>
+        <h1>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .</h1>
         <p class="subtitle">中高生・受験生のための、ゆるやか作業スペース</p>
     </header>
     <div class="tab-menu">
@@ -203,7 +307,7 @@ HTML_TEMPLATE = """
     <div class="container">
         <div id="home" class="tab-content active">
             <h2>ようこそ、ひと息つける作業場へ。</h2>
-            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 .」は、勉強や作業を進めるためのコミュニティです。</p>
+            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .」は、勉強や作業を進めるためのコミュニティです。</p>
             <div class="feature-grid">
                 <div class="feature-card"><p><strong>01. 音のない集中スペース</strong></p><p style="font-size:0.95rem;">文字とタイマーだけの静かな部屋。</p></div>
                 <div class="feature-card"><p><strong>02. 気配を感じる作業VC</strong></p><p style="font-size:0.95rem;">作業音がかすかに聞こえる空間です。</p></div>
