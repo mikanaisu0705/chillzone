@@ -193,7 +193,8 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="", num1=5, num2=8, msg="Discordの認証パネルにあるボタンを押してアクセスしてください。", msg_color="red")
+    # user_id を "HOME" にすることで、エラーにならず「ホーム」タブが最初に開くようになります！
+    return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="Discordのボタンからアクセスすると、ここにクイズが表示されます。")
 
 @app.route('/callback')
 def callback():
@@ -262,7 +263,8 @@ def submit_quiz():
     return render_template_string(HTML_TEMPLATE, username=session_data['username'], user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg="❌ 答えが違います。", msg_color="red")
 
 def run_flask():
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False) # 外部アクセスを受け付ける設定に変更
+    # host='0.0.0.0' を足すことで、Renderが外からのアクセスをしっかり繋いでくれるようになります！
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
 if __name__ == '__main__':
     t = threading.Thread(target=run_flask)
