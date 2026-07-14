@@ -290,25 +290,41 @@ def index():
 @app.route('/callback')
 def callback():
     code = request.args.get('code')
-    if not code: return redirect(url_for('index'))
-    data = { 'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code', 'code': code, 'redirect_uri': REDIRECT_URI }
+    if not code:
+        return redirect(url_for('index'))
+        
+    data = { 
+        'client_id': CLIENT_ID, 
+        'client_secret': CLIENT_SECRET, 
+        'grant_type': 'authorization_code', 
+        'code': code, 
+        'redirect_uri': REDIRECT_URI 
+    }
+    
     headers = {
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'User-Agent': 'DiscordBot (https://github.com, 1.0)'  # 👈 これを足すことでブロックされにくくなります！
-}
-r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
-    access_token = r.json().get('access_token')
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
     
-    if not access_token: return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="", num1=0, num2=0, msg="Discordの認証に失敗しました。", msg_color="red")
+    r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
     
-    user_r = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'}).json()
+    try:
+        # ズレ（インデント）を左に揃えて綺麗に修正しました
+        access_token = r.json().get('access_token')
+    except Exception as e:
+        print(f"トークン取得失敗（エラーレスポンス）: {r.text}")
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="", num1=0, num2=0, msg="Discordとの通信でブロックが発生しました。しばらく待ってから再度お試しください。", msg_color="red")
+    
+    if not access_token:
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="", num1=0, num2=0, msg="Discordの認証に失敗しました。", msg_color="red")
+    
+    user_r = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}', 'User-Agent': 'Mozilla/5.0'}).json()
     discord_id, discord_username = user_r.get('id'), user_r.get('username')
     
     n1, n2 = random.randint(1, 20), random.randint(1, 20)
     if discord_id:
         quiz_sessions[str(discord_id)] = { 'correct_answer': n1 + n2, 'username': discord_username, 'num1': n1, 'num2': n2 }
     return render_template_string(HTML_TEMPLATE, username=discord_username, user_id=discord_id, num1=n1, num2=n2, msg=None)
-
 @app.route('/submit-quiz', methods=['POST'])
 def submit_quiz():
     user_id = request.form.get('user_id')
