@@ -23,8 +23,8 @@ ROLE_ID = 1526589486207733770
 CLIENT_ID = '1526464758927200326' 
 REDIRECT_URI = 'https://chillzone-5oxh.onrender.com/callback'
 
-# 📂 【新規追加】専用個室を作るカテゴリのID（ここにコピーしたIDを入れてください）
-CATEGORY_ID = 1526720938517856297  
+# 📂 専用個室を作るカテゴリのID
+CATEGORY_ID = 1526576980198428715  
 
 # ==========================================
 # 💾 データ保存用システム（JSON）
@@ -63,8 +63,8 @@ intents.members = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 vc_start_times = {}
-room_counter = 1      # カフェルームの番号管理
-active_rooms = {}     # 作成されたカスタム部屋の管理 { チャンネルID: { "owner_id": 所有者ID, "created_at": 作成時間 } }
+room_counter = 1      
+active_rooms = {}     
 
 # 🔑 認証用View
 class VerificationView(View):
@@ -95,7 +95,6 @@ class PrivateRoomView(View):
             await interaction.response.send_message("❌ カテゴリの設定が正しくありません。管理者に連絡してください。", ephemeral=True)
             return
             
-        # すでに部屋を作っているかチェック
         for r_id, info in active_rooms.items():
             if info["owner_id"] == interaction.user.id:
                 existing_room = guild.get_channel(r_id)
@@ -103,20 +102,17 @@ class PrivateRoomView(View):
                     await interaction.response.send_message(f"❌ すでにあなたの部屋 {existing_room.mention} が存在します。", ephemeral=True)
                     return
 
-        # 部屋番号付きの名前を決定（丸数字）
         numbers = ["⓪", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"]
         num_str = numbers[room_counter] if room_counter < len(numbers) else f" {room_counter}"
         room_name = f"カフェルーム{num_str}"
         room_counter += 1
         
-        # 権限の設定（作った人と管理者だけが見えるようにする）
         overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False), # 全員は見えない
-            interaction.user: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True), # 作った人は入れる
-            guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True) # Botは操作可能
+            guild.default_role: discord.PermissionOverwrite(view_channel=False), 
+            interaction.user: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True), 
+            guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True) 
         }
         
-        # ボイスチャンネル作成
         new_channel = await guild.create_voice_channel(name=room_name, category=category, overwrites=overwrites)
         active_rooms[new_channel.id] = {
             "owner_id": interaction.user.id,
@@ -128,13 +124,20 @@ class PrivateRoomView(View):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
-    bot.add_view(PrivateRoomView()) # ボタンを常時監視
-    bot.loop.create_task(check_room_expiry()) # 24時間監視タスクの始動
+    bot.add_view(PrivateRoomView()) 
+    bot.loop.create_task(check_room_expiry()) 
     try:
         synced = await bot.tree.sync()
         print(f"スラッシュコマンドを {len(synced)} 個同期しました。")
     except Exception as e:
         print(f"同期エラー: {e}")
+
+# 📝 【新規追加】チャンネルが作成されたときのログ検知
+@bot.event
+async def on_guild_channel_create(channel):
+    # 作成されたのが指定カテゴリ内のボイスチャンネルの場合
+    if channel.category_id == CATEGORY_ID and isinstance(channel, discord.VoiceChannel):
+        print(f"【ログ】ボイスチャンネルが作成されました: {channel.name} (ID: {channel.id})")
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -142,7 +145,6 @@ async def on_voice_state_update(member, before, after):
         return
     user_id = str(member.id)
     
-    # --- 通常の作業時間記録システム ---
     if before.channel is None and after.channel is not None:
         vc_start_times[user_id] = time.time()
     elif before.channel is not None and after.channel is None:
@@ -161,9 +163,7 @@ async def on_voice_state_update(member, before, after):
                 save_stats(stats)
                 print(f"【記録】{member.name} が {minutes_earned} 分作業しました。")
 
-    # --- 【新規】カスタム個室の自動削除システム ---
     if before.channel and before.channel.id in active_rooms:
-        # 部屋から誰もいなくなったか確認
         if len(before.channel.members) == 0:
             try:
                 channel_id = before.channel.id
@@ -173,18 +173,14 @@ async def on_voice_state_update(member, before, after):
             except Exception as e:
                 print(f"部屋の自動削除に失敗: {e}")
 
-# ⏰ 【新規追加】24時間経過した部屋を自動消去する常時監視システム
 async def check_room_expiry():
     await bot.wait_until_ready()
     while not bot.is_closed():
         now = datetime.now()
         to_delete = []
-        
         for r_id, info in list(active_rooms.items()):
-            # 作成から24時間が経過しているか判定
             if now - info["created_at"] >= timedelta(hours=24):
                 to_delete.append(r_id)
-                
         for r_id in to_delete:
             guild = bot.get_guild(GUILD_ID)
             if guild:
@@ -196,8 +192,21 @@ async def check_room_expiry():
                     except Exception as e:
                         print(f"時間切れ削除に失敗: {e}")
             active_rooms.pop(r_id, None)
+        await asyncio.sleep(60)
+
+# 📢 【新規追加】BUMP通知コマンド
+@bot.tree.command(name="bump", description="BUMPの2時間後通知タイマーをセットします")
+async def bump(interaction: discord.Interaction):
+    await interaction.response.send_message("「/bump」を実行しました！2時間後にこのチャンネルで通知します。")
+    
+    # 2時間（7200秒）待機するバックグラウンドタスク
+    async def bump_timer(channel_id):
+        await asyncio.sleep(7200)
+        channel = bot.get_channel(channel_id)
+        if channel:
+            await channel.send("⏳ BUMPの時間だよ！")
             
-        await asyncio.sleep(60) # 1分ごとにチェック
+    bot.loop.create_task(bump_timer(interaction.channel_id))
 
 @bot.tree.command(name="setup_verify", description="認証パネルを設置します")
 @app_commands.checks.has_permissions(administrator=True)
@@ -307,7 +316,7 @@ HTML_TEMPLATE = """
     <div class="container">
         <div id="home" class="tab-content active">
             <h2>ようこそ、ひと息つける作業場へ。</h2>
-            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .」は、勉強や作業を進めるためのコミュニティです。</p>
+            <p>「𝖼𝗁ぃll 𝗓𝗈𝗇 .」は、勉強や作業を進めるためのコミュニティです。</p>
             <div class="feature-grid">
                 <div class="feature-card"><p><strong>01. 音のない集中スペース</strong></p><p style="font-size:0.95rem;">文字とタイマーだけの静かな部屋。</p></div>
                 <div class="feature-card"><p><strong>02. 気配を感じる作業VC</strong></p><p style="font-size:0.95rem;">作業音がかすかに聞こえる空間です。</p></div>
@@ -325,7 +334,8 @@ HTML_TEMPLATE = """
             <h2>コマンドガイド</h2>
             <div class="code-block">
                 <strong>/status</strong> ➔ 自分の現在のレベルや合計時間を確認<br>
-                <strong>/ranking</strong> ➔ サーバー内の作業時間ランキングTOP10を表示
+                <strong>/ranking</strong> ➔ サーバー内の作業時間ランキングTOP10を表示<br>
+                <strong>/bump</strong> ➔ BUMPの2時間後通知タイマーをセット
             </div>
         </div>
         <div id="verify" class="tab-content">
