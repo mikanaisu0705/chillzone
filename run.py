@@ -292,8 +292,11 @@ def callback():
     code = request.args.get('code')
     if not code: return redirect(url_for('index'))
     data = { 'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code', 'code': code, 'redirect_uri': REDIRECT_URI }
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
+    headers = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'User-Agent': 'DiscordBot (https://github.com, 1.0)'  # 👈 これを足すことでブロックされにくくなります！
+}
+r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
     access_token = r.json().get('access_token')
     
     if not access_token: return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="", num1=0, num2=0, msg="Discordの認証に失敗しました。", msg_color="red")
