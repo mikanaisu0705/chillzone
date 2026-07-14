@@ -14,15 +14,12 @@ import time
 # ==========================================
 # ⚙️ 設定エリア
 # ==========================================
-# トークン等はRenderの環境変数（Environment Variables）から読み込みます
 TOKEN = os.environ.get('DISCORD_TOKEN', '')
 CLIENT_SECRET = os.environ.get('DISCORD_CLIENT_SECRET', '')
 
 GUILD_ID = 1526575335460573315  
 ROLE_ID = 1526589486207733770   
 CLIENT_ID = '1526464758927200326' 
-
-# ⭕ 修正ポイント：リンク先を完全にRenderの公開アドレスに変更しました！
 REDIRECT_URI = 'https://chillzone-5oxh.onrender.com/callback'
 
 # ==========================================
@@ -43,7 +40,6 @@ def save_stats(stats):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=4, ensure_ascii=False)
 
-# レベル計算（例: 次のレベルに必要な分 = レベル * 10分）
 def calculate_level(total_minutes):
     level = 1
     needed = 10
@@ -51,7 +47,7 @@ def calculate_level(total_minutes):
     while left_minutes >= needed:
         left_minutes -= needed
         level += 1
-        needed = level * 10  # レベルが上がるほど難しくなる設定
+        needed = level * 10
     return level, needed - left_minutes
 
 # ==========================================
@@ -62,13 +58,11 @@ intents.message_content = True
 intents.members = True 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# VCの入室時間を記録する一時的な辞書
 vc_start_times = {}
 
 class VerificationView(View):
     def __init__(self):
         super().__init__(timeout=None)
-        # ⭕ 修正ポイント：認証ボタンの飛び先URLもRenderの公開アドレスに完全修正しました！
         oauth_url = (
             f"https://discord.com/api/oauth2/authorize"
             f"?client_id={CLIENT_ID}"
@@ -88,39 +82,28 @@ async def on_ready():
     except Exception as e:
         print(f"同期エラー: {e}")
 
-# 🕒 VCの入退室を検知して作業時間を保存するイベント
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot:
         return
-
     user_id = str(member.id)
-
-    # 1. VCに入室したとき
     if before.channel is None and after.channel is not None:
         vc_start_times[user_id] = time.time()
-
-    # 2. VCから退出したとき
     elif before.channel is not None and after.channel is None:
         start_time = vc_start_times.pop(user_id, None)
         if start_time:
             duration = time.time() - start_time
-            minutes_earned = round(duration / 60, 1) # 分単位に変換（小数点第1位まで）
-
+            minutes_earned = round(duration / 60, 1)
             if minutes_earned > 0:
                 stats = load_stats()
                 if user_id not in stats:
                     stats[user_id] = {"username": member.name, "total_minutes": 0.0, "level": 1}
-                
                 stats[user_id]["total_minutes"] = round(stats[user_id]["total_minutes"] + minutes_earned, 1)
                 stats[user_id]["username"] = member.name
-                
-                # レベルの再計算
                 new_level, _ = calculate_level(int(stats[user_id]["total_minutes"]))
                 stats[user_id]["level"] = new_level
-                
                 save_stats(stats)
-                print(f"【記録】{member.name} が {minutes_earned} 分作業しました。(合計: {stats[user_id]['total_minutes']}分 / Lv.{new_level})")
+                print(f"【記録】{member.name} が {minutes_earned} 分作業しました。")
 
 @bot.tree.command(name="setup_verify", description="認証パネルを設置します")
 @app_commands.checks.has_permissions(administrator=True)
@@ -132,47 +115,35 @@ async def setup_verify(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed, view=VerificationView())
 
-# 📊 自分のステータス（レベル・作業時間）を確認するコマンド
 @bot.tree.command(name="status", description="自分の作業時間とレベルを確認します")
 async def status(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     stats = load_stats()
-    
     if user_id not in stats:
         stats[user_id] = {"username": interaction.user.name, "total_minutes": 0.0, "level": 1}
-    
     user_data = stats[user_id]
     total_min = user_data["total_minutes"]
     current_level, next_remain = calculate_level(int(total_min))
-    
     embed = discord.Embed(title=f"📊 {interaction.user.name} さんの作業データ", color=0xe8a7a1)
     embed.add_field(name="👑 現在のレベル", value=f"**Lv. {current_level}**", inline=False)
     embed.add_field(name="⏱️ 合計作業時間", value=f"{total_min} 分", inline=True)
     embed.add_field(name="✨ 次のLvまであと", value=f"{round(next_remain, 1)} 分", inline=True)
     embed.set_thumbnail(url=interaction.user.display_avatar.url)
-    
     await interaction.response.send_message(embed=embed)
 
-# 🏆 サーバー内の作業時間ランキングを表示するコマンド
 @bot.tree.command(name="ranking", description="サーバー内の作業時間ランキングTOP10を表示します")
 async def ranking(interaction: discord.Interaction):
     stats = load_stats()
     if not stats:
         await interaction.response.send_message("まだ誰の作業時間も記録されていません！")
         return
-        
-    # 合計時間が多い順に並び替え
     sorted_stats = sorted(stats.items(), key=lambda x: x[1]["total_minutes"], reverse=True)[:10]
-    
     embed = discord.Embed(title="🏆 𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 . 作業時間ランキング", color=0xe8a7a1)
-    
     ranking_text = ""
     medal = ["🥇", "🥈", "🥉"]
-    
     for i, (uid, data) in enumerate(sorted_stats):
         rank_icon = medal[i] if i < 3 else f"`#{i+1}`"
         ranking_text += f"{rank_icon} **{data['username']}** - Lv.{data.get('level', 1)} ({data['total_minutes']}分)\n"
-        
     embed.description = ranking_text
     await interaction.response.send_message(embed=embed)
 
@@ -292,7 +263,6 @@ def callback():
     code = request.args.get('code')
     if not code:
         return redirect(url_for('index'))
-        
     data = { 
         'client_id': CLIENT_ID, 
         'client_secret': CLIENT_SECRET, 
@@ -300,62 +270,49 @@ def callback():
         'code': code, 
         'redirect_uri': REDIRECT_URI 
     }
-    
-    # 🕵️‍♂️ ブラウザになりすますための偽装ヘッダー
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-    
-    # 🔄 規制対策：失敗しても3回まで時間を空けて自動で再試行する仕組み
     attempts = 0
     r = None
     while attempts < 3:
         try:
             r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers, timeout=8)
             if r.status_code == 200:
-                break  # 成功したらループを抜ける
-            elif r.status_code == 429: # Discordのアクセス制限コード
+                break
+            elif r.status_code == 429:
                 retry_after = r.json().get('retry_after', 5)
                 time.sleep(retry_after)
             else:
-                time.sleep(3) # それ以外のエラーは3秒待つ
+                time.sleep(3)
         except Exception as e:
-            print(f"通信エラー発生、再試行します: {e}")
             time.sleep(3)
         attempts += 1
-
-    # 🛑 それでもダメだった場合の安全弁
     if r is None or r.status_code != 200:
-        error_msg = r.text if r else "タイムアウト"
-        print(f"Discord認証通信ブロック発生: {error_msg}")
-        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="⚠️ 現在Discord側で一時的なアクセス規制が発生しています。5分〜10分ほど時間を空けて、もう一度Discordのボタンを押し直してみてください。", msg_color="red")
-    
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="⚠️ 現在Discord側で一時的なアクセス規制が発生しています。5分ほど待ってやり直してください。", msg_color="red")
     try:
         access_token = r.json().get('access_token')
-    except Exception as e:
+    except:
         return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="認証データの解析に失敗しました。", msg_color="red")
-        
     if not access_token:
-        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="Discordの認証トークンが空です。", msg_color="red")
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="トークンが空です。", msg_color="red")
     
-    # ユーザー情報の取得時もヘッダーを付与
     user_headers = {'Authorization': f'Bearer {access_token}', 'User-Agent': 'Mozilla/5.0'}
     user_r = requests.get('https://discord.com/api/users/@me', headers=user_headers).json()
     discord_id, discord_username = user_r.get('id'), user_r.get('username')
-    
     n1, n2 = random.randint(1, 20), random.randint(1, 20)
     if discord_id:
         quiz_sessions[str(discord_id)] = { 'correct_answer': n1 + n2, 'username': discord_username, 'num1': n1, 'num2': n2 }
-    return render_template_string(HTML_TEMPLATE, username=discord_username, user_id=discord_id, num1=n1, num2=n2, msg=None) user_id=discord_id, num1=n1, num2=n2, msg=None)
+    return render_template_string(HTML_TEMPLATE, username=discord_username, user_id=discord_id, num1=n1, num2=n2, msg=None)
+
 @app.route('/submit-quiz', methods=['POST'])
 def submit_quiz():
     user_id = request.form.get('user_id')
     user_answer = request.form.get('answer')
     session_data = quiz_sessions.get(str(user_id))
-    
-    if not session_data: return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=0, num2=0, msg="タイムアウトしました。", msg_color="red")
-    
+    if not session_data:
+        return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=0, num2=0, msg="タイムアウトしました。", msg_color="red")
     try:
         if int(user_answer) == session_data['correct_answer']:
             guild = bot.get_guild(GUILD_ID)
@@ -371,11 +328,11 @@ def submit_quiz():
                             return render_template_string(HTML_TEMPLATE, username="認証完了", user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg="✨ 正解です！認証が完了し、ロールが付与されました！", msg_color="green")
                 except Exception as e:
                     return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg=f"❌ 失敗: {e}", msg_color="red")
-    except ValueError: pass
+    except ValueError:
+        pass
     return render_template_string(HTML_TEMPLATE, username=session_data['username'], user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg="❌ 答えが違います。", msg_color="red")
 
 def run_flask():
-    # host='0.0.0.0' を足してRender経由のアクセスを受け付けます
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
 if __name__ == '__main__':
