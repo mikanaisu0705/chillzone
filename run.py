@@ -1,3 +1,4 @@
+import os 
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -8,21 +9,50 @@ import requests
 import json
 import random
 import asyncio
-import os  # 環境変数用に追加
+import time
 
 # ==========================================
-# ⚙️ 設定エリア（公開用に環境変数化しました！）
+# ⚙️ 設定エリア
 # ==========================================
-# GitHubに直接載せないよう、Render側の設定から読み込みます
+# トークン等はRenderの環境変数（Environment Variables）から読み込みます
 TOKEN = os.environ.get('DISCORD_TOKEN', '')
 CLIENT_SECRET = os.environ.get('DISCORD_CLIENT_SECRET', '')
 
-GUILD_ID = 1526575335460573315  # あなたのサーバーID
-ROLE_ID = 1526589486207733770   # 付与したい「認証済」ロールのID
-CLIENT_ID = '1526464758927200326'
+GUILD_ID = 1526575335460573315  
+ROLE_ID = 1526589486207733770   
+CLIENT_ID = '1526464758927200326' 
 
-# ⚠️ Renderなどで公開URLが決まったら、ここを「https://〇〇.onrender.com/callback」に書き換えます
-REDIRECT_URI = 'http://localhost:5000/callback'
+# ⭕ 修正ポイント：リンク先を完全にRenderの公開アドレスに変更しました！
+REDIRECT_URI = 'https://chillzone-5oxh.onrender.com/callback'
+
+# ==========================================
+# 💾 データ保存用システム（JSON）
+# ==========================================
+DATA_FILE = "user_stats.json"
+
+def load_stats():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_stats(stats):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=4, ensure_ascii=False)
+
+# レベル計算（例: 次のレベルに必要な分 = レベル * 10分）
+def calculate_level(total_minutes):
+    level = 1
+    needed = 10
+    left_minutes = total_minutes
+    while left_minutes >= needed:
+        left_minutes -= needed
+        level += 1
+        needed = level * 10  # レベルが上がるほど難しくなる設定
+    return level, needed - left_minutes
 
 # ==========================================
 # 🤖 Discord Bot 側の設定
@@ -32,13 +62,17 @@ intents.message_content = True
 intents.members = True 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
+# VCの入室時間を記録する一時的な辞書
+vc_start_times = {}
+
 class VerificationView(View):
     def __init__(self):
         super().__init__(timeout=None)
+        # ⭕ 修正ポイント：認証ボタンの飛び先URLもRenderの公開アドレスに完全修正しました！
         oauth_url = (
             f"https://discord.com/api/oauth2/authorize"
             f"?client_id={CLIENT_ID}"
-            f"&redirect_uri=http%3A%2F%2Flocalhost%3A5000%2Fcallback"
+            f"&redirect_uri=https%3A%2F%2Fchillzone-5oxh.onrender.com%2Fcallback"
             f"&response_type=code"
             f"&scope=identify%20guilds.join"
         )
@@ -52,7 +86,41 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f"スラッシュコマンドを {len(synced)} 個同期しました。")
     except Exception as e:
-        print(f"{e}")
+        print(f"同期エラー: {e}")
+
+# 🕒 VCの入退室を検知して作業時間を保存するイベント
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if member.bot:
+        return
+
+    user_id = str(member.id)
+
+    # 1. VCに入室したとき
+    if before.channel is None and after.channel is not None:
+        vc_start_times[user_id] = time.time()
+
+    # 2. VCから退出したとき
+    elif before.channel is not None and after.channel is None:
+        start_time = vc_start_times.pop(user_id, None)
+        if start_time:
+            duration = time.time() - start_time
+            minutes_earned = round(duration / 60, 1) # 分単位に変換（小数点第1位まで）
+
+            if minutes_earned > 0:
+                stats = load_stats()
+                if user_id not in stats:
+                    stats[user_id] = {"username": member.name, "total_minutes": 0.0, "level": 1}
+                
+                stats[user_id]["total_minutes"] = round(stats[user_id]["total_minutes"] + minutes_earned, 1)
+                stats[user_id]["username"] = member.name
+                
+                # レベルの再計算
+                new_level, _ = calculate_level(int(stats[user_id]["total_minutes"]))
+                stats[user_id]["level"] = new_level
+                
+                save_stats(stats)
+                print(f"【記録】{member.name} が {minutes_earned} 分作業しました。(合計: {stats[user_id]['total_minutes']}分 / Lv.{new_level})")
 
 @bot.tree.command(name="setup_verify", description="認証パネルを設置します")
 @app_commands.checks.has_permissions(administrator=True)
@@ -64,12 +132,55 @@ async def setup_verify(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed, view=VerificationView())
 
+# 📊 自分のステータス（レベル・作業時間）を確認するコマンド
+@bot.tree.command(name="status", description="自分の作業時間とレベルを確認します")
+async def status(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    stats = load_stats()
+    
+    if user_id not in stats:
+        stats[user_id] = {"username": interaction.user.name, "total_minutes": 0.0, "level": 1}
+    
+    user_data = stats[user_id]
+    total_min = user_data["total_minutes"]
+    current_level, next_remain = calculate_level(int(total_min))
+    
+    embed = discord.Embed(title=f"📊 {interaction.user.name} さんの作業データ", color=0xe8a7a1)
+    embed.add_field(name="👑 現在のレベル", value=f"**Lv. {current_level}**", inline=False)
+    embed.add_field(name="⏱️ 合計作業時間", value=f"{total_min} 分", inline=True)
+    embed.add_field(name="✨ 次のLvまであと", value=f"{round(next_remain, 1)} 分", inline=True)
+    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    
+    await interaction.response.send_message(embed=embed)
+
+# 🏆 サーバー内の作業時間ランキングを表示するコマンド
+@bot.tree.command(name="ranking", description="サーバー内の作業時間ランキングTOP10を表示します")
+async def ranking(interaction: discord.Interaction):
+    stats = load_stats()
+    if not stats:
+        await interaction.response.send_message("まだ誰の作業時間も記録されていません！")
+        return
+        
+    # 合計時間が多い順に並び替え
+    sorted_stats = sorted(stats.items(), key=lambda x: x[1]["total_minutes"], reverse=True)[:10]
+    
+    embed = discord.Embed(title="🏆 𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 . 作業時間ランキング", color=0xe8a7a1)
+    
+    ranking_text = ""
+    medal = ["🥇", "🥈", "🥉"]
+    
+    for i, (uid, data) in enumerate(sorted_stats):
+        rank_icon = medal[i] if i < 3 else f"`#{i+1}`"
+        ranking_text += f"{rank_icon} **{data['username']}** - Lv.{data.get('level', 1)} ({data['total_minutes']}分)\n"
+        
+    embed.description = ranking_text
+    await interaction.response.send_message(embed=embed)
+
 # ==========================================
 # 🌐 Flask Webサイト 側の設定
 # ==========================================
 app = Flask(__name__)
 app.secret_key = 'chillzone_secret_key_look_at_me'
-
 quiz_sessions = {}
 
 HTML_TEMPLATE = """
@@ -94,29 +205,23 @@ HTML_TEMPLATE = """
         .tab-content.active { display: block; animation: fadeIn 0.4s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         h2 { font-size: 1.6rem; border-bottom: 2px solid var(--accent-color); padding-bottom: 10px; margin-top: 0; margin-bottom: 25px; color: #3a3a3a; }
-        h3 { font-size: 1.2rem; margin-top: 30px; margin-bottom: 10px; color: #5a5a5a; }
         p { margin: 15px 0; font-size: 1.05rem; }
-        ul, ol { padding-left: 20px; }
+        ul { padding-left: 20px; }
         li { margin-bottom: 10px; }
         .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 25px; }
-        @media (max-width: 600px) { .feature-grid { grid-template-columns: 1fr; } }
         .feature-card { background-color: var(--bg-color); padding: 20px; border-radius: 18px; border: 1px solid rgba(0,0,0,0.03); }
         .feature-card strong { color: var(--main-color); font-size: 1.1rem; }
         .quiz-container { background: #fffafa; padding: 30px; border-radius: 20px; margin-top: 25px; text-align: center; border: 2px dashed var(--main-color); }
         .quiz-input { font-family: monospace; font-size: 1.4rem; padding: 8px; width: 100px; text-align: center; border-radius: 12px; border: 2px solid var(--accent-color); outline: none; margin-bottom: 15px; }
-        .quiz-input:focus { border-color: var(--main-color); }
-        .btn-submit { display: block; margin: 10px auto 0 auto; background-color: var(--main-color); color: white; border: none; padding: 12px 35px; border-radius: 25px; cursor: pointer; font-family: 'Shippori Mincho', serif; font-weight: bold; font-size: 1rem; transition: background 0.2s; }
-        .btn-submit:hover { background-color: #df9690; }
+        .btn-submit { display: block; margin: 10px auto 0 auto; background-color: var(--main-color); color: white; border: none; padding: 12px 35px; border-radius: 25px; cursor: pointer; font-family: 'Shippori Mincho', serif; font-weight: bold; font-size: 1rem; }
         .code-block { background: #fdfaf6; padding: 20px; border-radius: 16px; border-left: 4px solid var(--main-color); font-family: monospace; font-size: 0.95rem; overflow-x: auto; }
     </style>
 </head>
 <body>
-
     <header>
         <h1>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 .</h1>
         <p class="subtitle">中高生・受験生のための、ゆるやか作業スペース</p>
     </header>
-
     <div class="tab-menu">
         <button class="tab-btn active" onclick="openTab('home')">ホーム</button>
         <button class="tab-btn" onclick="openTab('rules')">利用規約</button>
@@ -124,56 +229,45 @@ HTML_TEMPLATE = """
         <button class="tab-btn" onclick="openTab('commands')">コマンド確認</button>
         <button class="tab-btn" id="verify-tab-nav" onclick="openTab('verify')">アカウント認証</button>
     </div>
-
     <div class="container">
         <div id="home" class="tab-content active">
             <h2>ようこそ、ひと息つける作業場へ。</h2>
-            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 .」は、中学生、高校生、そして未来に向かってひたむきに励む受験生が、それぞれのペースで勉強や作業を進めるためのコミュニティです。</p>
+            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇𝖾 .」は、勉強や作業を進めるためのコミュニティです。</p>
             <div class="feature-grid">
-                <div class="feature-card"><p><strong>01. 音のない集中スペース</strong></p><p style="font-size:0.95rem;">文字とタイマーだけの静かな部屋。自分の世界に没頭できます。</p></div>
-                <div class="feature-card"><p><strong>02. 気配を感じる作業VC</strong></p><p style="font-size:0.95rem;">キーボードの打鍵音やペンを走らせる音だけがかすかに聞こえる自習室空間です。</p></div>
+                <div class="feature-card"><p><strong>01. 音のない集中スペース</strong></p><p style="font-size:0.95rem;">文字とタイマーだけの静かな部屋。</p></div>
+                <div class="feature-card"><p><strong>02. 気配を感じる作業VC</strong></p><p style="font-size:0.95rem;">作業音がかすかに聞こえる空間です。</p></div>
             </div>
         </div>
-
         <div id="rules" class="tab-content">
             <h2>コミュニティのたいせつな約束</h2>
-            <p>みんなが安心して目標に集中できる空間を維持するためのガイドラインです。</p>
             <ul>
-                <li><strong>思いやりのある言葉遣い</strong>：敬意を持った優しいコミュニケーションを。</li>
-                <li><strong>個人情報の保護</strong>：本名や学校名は教え合わないようにしてください。</li>
+                <li>思いやりのある言葉遣い</li>
+                <li>個人情報の保護</li>
             </ul>
         </div>
-
-        <div id="contact" class="tab-content">
-            <h2>困ったとき・お問い合わせ</h2>
-            <p>不具合の報告や荒らしの報告は、サーバー内の窓口チャンネル、または運営宛てにお問い合わせください。</p>
-        </div>
-
+        <div id="contact" class="tab-content"><h2>お問い合わせ</h2><p>サーバー内の窓口チャンネルまでどうぞ。</p></div>
         <div id="commands" class="tab-content">
-            <h2>自作Time Tracker コマンドガイド</h2>
-            <p>ボイスチャンネルの滞在時間が自動で記録されるシステムです。</p>
-            <div class="code-block"><strong>/status</strong> ➔ 自分の合計勉強時間などを確認できます。</div>
+            <h2>コマンドガイド</h2>
+            <div class="code-block">
+                <strong>/status</strong> ➔ 自分の現在のレベルや合計時間を確認<br>
+                <strong>/ranking</strong> ➔ サーバー内の作業時間ランキングTOP10を表示
+            </div>
         </div>
-
         <div id="verify" class="tab-content">
             <h2>🔒 サーバー認証テスト</h2>
-            {% if user_id %}
-                <p>こんにちは、<b>{{ username }}</b> さん。スパムBot防止のため、以下の計算問題を解いてください。</p>
+            {% if user_id and user_id != "HOME" %}
                 <form action="/submit-quiz" method="POST" class="quiz-container">
                     <input type="hidden" name="user_id" value="{{ user_id }}">
                     <p style="font-size: 1.8rem; font-weight: bold; color: var(--main-color);"> {{ num1 }} + {{ num2 }} = ？ </p>
                     <input type="number" name="answer" class="quiz-input" placeholder="答え" required autofocus><br>
                     <button type="submit" class="btn-submit">送信して認証を完了する</button>
-                    {% if msg %}
-                        <p style="margin-top: 20px; font-weight: bold; color: {{ msg_color }};">{{ msg }}</p>
-                    {% endif %}
+                    {% if msg %} <p style="margin-top: 20px; font-weight: bold; color: {{ msg_color }};">{{ msg }}</p> {% endif %}
                 </form>
             {% else %}
-                <p style="color: red; font-weight: bold; text-align: center; margin-top: 30px;">{{ msg }}</p>
+                <p style="color: #888; font-weight: bold; text-align: center; margin-top: 30px;">{{ msg }}</p>
             {% endif %}
         </div>
     </div>
-
     <script>
         function openTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -183,9 +277,7 @@ HTML_TEMPLATE = """
             const targetBtn = Array.from(document.querySelectorAll('.tab-btn')).find(b => b.getAttribute('onclick').includes(tabId));
             if(targetBtn) targetBtn.classList.add('active');
         }
-        {% if user_id and msg != "Discordの認証パネルにあるボタンを押してアクセスしてください。" %}
-            openTab('verify');
-        {% endif %}
+        {% if user_id and user_id != "HOME" %} openTab('verify'); {% endif %}
     </script>
 </body>
 </html>
@@ -193,42 +285,25 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    # user_id を "HOME" にすることで、エラーにならず「ホーム」タブが最初に開くようになります！
     return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="Discordのボタンからアクセスすると、ここにクイズが表示されます。")
 
 @app.route('/callback')
 def callback():
     code = request.args.get('code')
     if not code: return redirect(url_for('index'))
-    
-    data = {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'grant_type': 'authorization_code',
-        'code': code,
-        'redirect_uri': REDIRECT_URI
-    }
+    data = { 'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code', 'code': code, 'redirect_uri': REDIRECT_URI }
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
     r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
-    token_json = r.json()
-    access_token = token_json.get('access_token')
+    access_token = r.json().get('access_token')
     
-    if not access_token:
-        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="", num1=0, num2=0, msg="Discordの認証に失敗しました。もう一度お試しください。", msg_color="red")
-
-    user_headers = {'Authorization': f'Bearer {access_token}'}
-    user_r = requests.get('https://discord.com/api/users/@me', headers=user_headers)
-    user_json = user_r.json()
+    if not access_token: return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="", num1=0, num2=0, msg="Discordの認証に失敗しました。", msg_color="red")
     
-    discord_id = user_json.get('id')
-    discord_username = user_json.get('username')
+    user_r = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'}).json()
+    discord_id, discord_username = user_r.get('id'), user_r.get('username')
     
-    n1 = random.randint(1, 20)
-    n2 = random.randint(1, 20)
-    
+    n1, n2 = random.randint(1, 20), random.randint(1, 20)
     if discord_id:
         quiz_sessions[str(discord_id)] = { 'correct_answer': n1 + n2, 'username': discord_username, 'num1': n1, 'num2': n2 }
-    
     return render_template_string(HTML_TEMPLATE, username=discord_username, user_id=discord_id, num1=n1, num2=n2, msg=None)
 
 @app.route('/submit-quiz', methods=['POST'])
@@ -237,8 +312,7 @@ def submit_quiz():
     user_answer = request.form.get('answer')
     session_data = quiz_sessions.get(str(user_id))
     
-    if not session_data:
-        return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=0, num2=0, msg="タイムアウトしました。", msg_color="red")
+    if not session_data: return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=0, num2=0, msg="タイムアウトしました。", msg_color="red")
     
     try:
         if int(user_answer) == session_data['correct_answer']:
@@ -246,24 +320,20 @@ def submit_quiz():
             if guild:
                 try:
                     coro_member = guild.fetch_member(int(user_id))
-                    future_member = asyncio.run_coroutine_threadsafe(coro_member, bot.loop)
-                    member = future_member.result(timeout=10)
-
+                    member = asyncio.run_coroutine_threadsafe(coro_member, bot.loop).result(timeout=10)
                     if member:
                         role = guild.get_role(ROLE_ID)
                         if role:
-                            coro_role = member.add_roles(role)
-                            asyncio.run_coroutine_threadsafe(coro_role, bot.loop).result(timeout=10)
+                            asyncio.run_coroutine_threadsafe(member.add_roles(role), bot.loop).result(timeout=10)
                             quiz_sessions.pop(str(user_id), None)
                             return render_template_string(HTML_TEMPLATE, username="認証完了", user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg="✨ 正解です！認証が完了し、ロールが付与されました！", msg_color="green")
                 except Exception as e:
-                    return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg=f"❌ ロール付与失敗: {e}", msg_color="red")
-    except ValueError:
-        pass
+                    return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg=f"❌ 失敗: {e}", msg_color="red")
+    except ValueError: pass
     return render_template_string(HTML_TEMPLATE, username=session_data['username'], user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg="❌ 答えが違います。", msg_color="red")
 
 def run_flask():
-    # host='0.0.0.0' を足すことで、Renderが外からのアクセスをしっかり繋いでくれるようになります！
+    # host='0.0.0.0' を足してRender経由のアクセスを受け付けます
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
 if __name__ == '__main__':
