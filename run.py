@@ -301,30 +301,53 @@ def callback():
         'redirect_uri': REDIRECT_URI 
     }
     
+    # 🕵️‍♂️ ブラウザになりすますための偽装ヘッダー
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
+    # 🔄 規制対策：失敗しても3回まで時間を空けて自動で再試行する仕組み
+    attempts = 0
+    r = None
+    while attempts < 3:
+        try:
+            r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers, timeout=8)
+            if r.status_code == 200:
+                break  # 成功したらループを抜ける
+            elif r.status_code == 429: # Discordのアクセス制限コード
+                retry_after = r.json().get('retry_after', 5)
+                time.sleep(retry_after)
+            else:
+                time.sleep(3) # それ以外のエラーは3秒待つ
+        except Exception as e:
+            print(f"通信エラー発生、再試行します: {e}")
+            time.sleep(3)
+        attempts += 1
+
+    # 🛑 それでもダメだった場合の安全弁
+    if r is None or r.status_code != 200:
+        error_msg = r.text if r else "タイムアウト"
+        print(f"Discord認証通信ブロック発生: {error_msg}")
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="⚠️ 現在Discord側で一時的なアクセス規制が発生しています。5分〜10分ほど時間を空けて、もう一度Discordのボタンを押し直してみてください。", msg_color="red")
     
     try:
-        # ズレ（インデント）を左に揃えて綺麗に修正しました
         access_token = r.json().get('access_token')
     except Exception as e:
-        print(f"トークン取得失敗（エラーレスポンス）: {r.text}")
-        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="", num1=0, num2=0, msg="Discordとの通信でブロックが発生しました。しばらく待ってから再度お試しください。", msg_color="red")
-    
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="認証データの解析に失敗しました。", msg_color="red")
+        
     if not access_token:
-        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="", num1=0, num2=0, msg="Discordの認証に失敗しました。", msg_color="red")
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="Discordの認証トークンが空です。", msg_color="red")
     
-    user_r = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}', 'User-Agent': 'Mozilla/5.0'}).json()
+    # ユーザー情報の取得時もヘッダーを付与
+    user_headers = {'Authorization': f'Bearer {access_token}', 'User-Agent': 'Mozilla/5.0'}
+    user_r = requests.get('https://discord.com/api/users/@me', headers=user_headers).json()
     discord_id, discord_username = user_r.get('id'), user_r.get('username')
     
     n1, n2 = random.randint(1, 20), random.randint(1, 20)
     if discord_id:
         quiz_sessions[str(discord_id)] = { 'correct_answer': n1 + n2, 'username': discord_username, 'num1': n1, 'num2': n2 }
-    return render_template_string(HTML_TEMPLATE, username=discord_username, user_id=discord_id, num1=n1, num2=n2, msg=None)
+    return render_template_string(HTML_TEMPLATE, username=discord_username, user_id=discord_id, num1=n1, num2=n2, msg=None) user_id=discord_id, num1=n1, num2=n2, msg=None)
 @app.route('/submit-quiz', methods=['POST'])
 def submit_quiz():
     user_id = request.form.get('user_id')
