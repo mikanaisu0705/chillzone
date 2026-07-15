@@ -26,9 +26,9 @@ REDIRECT_URI = 'https://chillzone-5oxh.onrender.com/callback'
 # 📂 専用個室を作るカテゴリのID
 CATEGORY_ID = 1526720938517856297  
 
-# 📢 【追加】お疲れ様メッセージを自動送信するテキストチャンネルのID
-# ※お疲れ様通知を送りたいテキストチャンネルのIDに書き換えてください。
-CONGRATS_CHANNEL_ID = 1526575335460573315 # デフォルトではサーバーのシステム等に合わせるか、適宜書き換えてください
+# 📢 各種チャンネルのID（ご指定通りに設定済み）
+CONGRATS_CHANNEL_ID = 1526576980198428715  # 退出ログの送信先
+WEEKLY_RANKING_CHANNEL_ID = 1526576085444071495  # 頑張り屋表彰のお知らせ先
 
 # ==========================================
 # 💾 データ保存用システム（JSON）
@@ -78,6 +78,7 @@ def calculate_level(total_minutes):
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True 
+intents.voice_states = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 vc_start_times = {}
@@ -86,6 +87,7 @@ active_rooms = {}
 
 active_bump_timers = {}
 active_pomo_timers = {}
+afk_trackers = {}  # 居眠り防止用の放置時間記録
 
 # ⏱️ Bot起動時刻の記録
 bot_start_time = datetime.now()
@@ -173,6 +175,94 @@ async def update_status_loop():
         
     await bot.change_presence(activity=activity)
 
+# 💤 【新機能】居眠り・放置防止ループ（1分ごとに巡回）
+@tasks.loop(minutes=1)
+async def check_afk_loop():
+    await bot.wait_until_ready()
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+        
+    now = time.time()
+    for vc in guild.voice_channels:
+        for member in vc.members:
+            if member.bot:
+                continue
+                
+            # マイクミュートかつスピーカーミュート（フルミュート）状態かチェック
+            if member.voice.self_mute and member.voice.self_deaf:
+                user_id = str(member.id)
+                if user_id not in afk_trackers:
+                    afk_trackers[user_id] = now
+                elif now - afk_trackers[user_id] >= 900:  # 15分（900秒）以上経過
+                    try:
+                        await member.move_to(None, reason="居眠り・放置防止による自動切断")
+                        afk_trackers.pop(user_id, None)
+                        
+                        # ログ用チャンネルへ通知
+                        log_channel = bot.get_channel(CONGRATS_CHANNEL_ID)
+                        if log_channel:
+                            await log_channel.send(f"💤 {member.mention} さんが15分以上無反応（フルミュート）だったため、接続を切断しました。体調に合わせてゆっくり休んでくださいね。")
+                    except Exception as e:
+                        print(f"AFK自動切断に失敗: {e}")
+            else:
+                # ミュートが解除されたら放置タイマーをリセット
+                afk_trackers.pop(str(member.id), None)
+
+# 👑 【新機能】週刊頑張り屋表彰ループ（毎週月曜日 AM 7:00）
+@tasks.loop(time=datetime.strptime("07:00", "%H:%M").time())
+async def weekly_ranking_loop():
+    await bot.wait_until_ready()
+    # 月曜日(0)のときだけ実行
+    if datetime.now().weekday() != 0:
+        return
+        
+    ranking_channel = bot.get_channel(WEEKLY_RANKING_CHANNEL_ID)
+    if not ranking_channel:
+        return
+        
+    stats = load_stats()
+    if not stats:
+        return
+        
+    # 直近1週間のweekly_logを元に合計時間を集計
+    user_weekly_totals = []
+    today = datetime.now()
+    past_7_days = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+    
+    for uid, data in stats.items():
+        weekly_log = data.get("weekly_log", {})
+        weekly_sum = sum(weekly_log.get(day, 0.0) for day in past_7_days)
+        if weekly_sum > 0:
+            user_weekly_totals.append((data.get("username", "不明なユーザー"), weekly_sum))
+            
+    if not user_weekly_totals:
+        return
+        
+    # 上位3名をソートして抽出
+    user_weekly_totals.sort(key=lambda x: x[1], reverse=True)
+    top_3 = user_weekly_totals[:3]
+    
+    embed = discord.Embed(
+        title="🏆 週刊『頑張り屋』表彰式 🏆",
+        description="先週1週間で、最も素晴らしい集中力を見せてくれたメンバーの発表です！👏",
+        color=0xffd700
+    )
+    
+    medals = ["🥇 最優秀頑張り屋", "🥈 優秀頑張り屋", "🥉 頑張り屋"]
+    for i, (username, total_m) in enumerate(top_3):
+        embed.add_field(
+            name=medals[i], 
+            value=f"**{username}** さん\n┗ 先週の作業時間: **{round(total_m, 1)} 分**", 
+            inline=False
+        )
+        
+    embed.set_footer(text="今週もそれぞれのペースで、コツコツ積み重ねていきましょう！✨")
+    await ranking_channel.send(embed=embed)
+    
+    # 次の週のために、全ユーザーのweekly_logを綺麗に掃除（初期化はせず古いものとして維持）
+    save_stats(stats)
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
@@ -181,6 +271,10 @@ async def on_ready():
     
     if not update_status_loop.is_running():
         update_status_loop.start()
+    if not check_afk_loop.is_running():
+        check_afk_loop.start()
+    if not weekly_ranking_loop.is_running():
+        weekly_ranking_loop.start()
         
     try:
         synced = await bot.tree.sync()
@@ -212,12 +306,18 @@ async def on_voice_state_update(member, before, after):
         return
     user_id = str(member.id)
     
+    # VCに入ったとき、またはフルミュートが解除されたときに放置状態をクリア
+    if after.channel is not None:
+        if not (member.voice.self_mute and member.voice.self_deaf):
+            afk_trackers.pop(user_id, None)
+            
     # 1. VCに参加した時刻を記録
     if before.channel is None and after.channel is not None:
         vc_start_times[user_id] = time.time()
         
     # 2. VCから退出（または完全に切断）した時の計算
     elif before.channel is not None and after.channel is None:
+        afk_trackers.pop(user_id, None)  # 完全に退出したら放置トラッカーを消去
         start_time = vc_start_times.pop(user_id, None)
         if start_time:
             duration = time.time() - start_time
@@ -265,16 +365,13 @@ async def on_voice_state_update(member, before, after):
                 current_streak = user_data.get("streak", 0)
                 
                 if last_active == yesterday_str:
-                    # 昨日やっていて、今日初めての勉強ならストリーク+1
                     if current_streak == 0:
                         user_data["streak"] = 1
                     else:
                         user_data["streak"] += 1
                 elif last_active == today_str:
-                    # すでに今日勉強している場合はストリーク維持
                     pass
                 else:
-                    # 昨日やっていなければストリークは1にリセット（初めての場合は1）
                     user_data["streak"] = 1
                 
                 user_data["last_active_date"] = today_str
@@ -286,13 +383,12 @@ async def on_voice_state_update(member, before, after):
                 save_stats(stats)
                 print(f"【記録】{member.name} が {minutes_earned} 分作業しました。（本日累計: {user_data['today_minutes']} 分）")
                 
-                # 🎉 【追加機能】お疲れ様お祝いメッセージの自動送信
+                # 🎉 お疲れ様お祝いメッセージの自動送信（ご指定のログチャンネルへ）
                 congrats_channel = bot.get_channel(CONGRATS_CHANNEL_ID)
                 if congrats_channel:
                     goal_min = user_data.get("daily_goal", 0)
                     today_total = user_data["today_minutes"]
                     
-                    # 目標を達成したかどうかの判定
                     is_goal_achieved = goal_min > 0 and today_total >= goal_min
                     
                     embed = discord.Embed(
@@ -429,7 +525,7 @@ async def goal(interaction: discord.Interaction, minutes: int):
     save_stats(stats)
     await interaction.response.send_message(f"🎯 今日の作業目標を **{minutes}分** に設定しました！無理せず自分のペースで頑張りましょう！")
 
-# 📊 【大幅強化版】ステータス確認（1週間グラフ & ストリーク追加）
+# 📊 ステータス確認（1週間グラフ & ストリーク追加）
 @bot.tree.command(name="status", description="自分の作業時間、目標達成率、1週間のグラフと継続日数を確認します")
 async def status(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
@@ -451,7 +547,6 @@ async def status(interaction: discord.Interaction):
     
     embed = discord.Embed(title=f"📊 {interaction.user.name} さんの作業スタッツ", color=0xe8a7a1)
     
-    # 連続自習ストリークのチェック（昨日・今日ともやっていなければ0日にリセット表示するロジック）
     today_str = datetime.now().strftime("%Y-%m-%d")
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     last_active = user_data.get("last_active_date", "")
@@ -461,13 +556,11 @@ async def status(interaction: discord.Interaction):
     else:
         streak_days = user_data.get("streak", 0)
         
-    # 基本情報
     embed.add_field(name="👑 現在のレベル", value=f"**Lv. {current_level}**", inline=True)
     embed.add_field(name="🔥 連続自習記録", value=f"**{streak_days} 日連続**", inline=True)
     embed.add_field(name="⏱️ 累計作業時間", value=f"**{total_min} 分**", inline=True)
     embed.add_field(name="✨ 次のLvまであと", value=f"`{round(next_remain, 1)}` 分", inline=True)
     
-    # 🎯 今日の目標進捗の表示
     goal_min = user_data.get("daily_goal", 0)
     if user_data.get("last_active_date") != today_str:
         today_done = 0.0
@@ -483,12 +576,10 @@ async def status(interaction: discord.Interaction):
         
     embed.add_field(name="🎯 本日の学習目標", value=goal_text, inline=False)
     
-    # 📅 直近1週間の簡易グラフ（weekly_logから生成）
     weekly_log = user_data.get("weekly_log", {})
     graph_text = ""
     weekday_labels = ["月", "火", "水", "木", "金", "土", "日"]
     
-    # 直近7日間の日付を取得
     today = datetime.now()
     for i in range(6, -1, -1):
         target_date = today - timedelta(days=i)
@@ -496,8 +587,6 @@ async def status(interaction: discord.Interaction):
         wday_label = weekday_labels[target_date.weekday()]
         
         minutes_done = weekly_log.get(date_key, 0.0)
-        
-        # グラフ用の絵文字ゲージの数（例: 30分ごとに🟩1個、最大5個まで）
         block_count = min(int(minutes_done // 30), 5)
         blocks = "🟩" * block_count if block_count > 0 else "⬜"
         
@@ -534,7 +623,7 @@ async def server_stats(interaction: discord.Interaction):
     hours, remainder = divmod(int(uptime.total_seconds()), 3600)
     minutes, _ = divmod(remainder, 60)
     
-    embed = discord.Embed(title="📈 𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 . サーバー統計", color=0x4ab3e3)
+    embed = discord.Embed(title="📈 𝖼𝗁𝗂𝗅𝗅 𝗓ον . サーバー統計", color=0x4ab3e3)
     embed.add_field(name="👥 登録作業メンバー数", value=f"{total_users} 人", inline=True)
     embed.add_field(name="⏱️ 累計作業時間", value=f"{round(total_minutes, 1)} 分", inline=True)
     embed.add_field(name="🤖 Botの連続稼働時間", value=f"{hours}時間{minutes}分", inline=False)
@@ -747,7 +836,7 @@ async def pomodoro(interaction: discord.Interaction):
             finish_focus_embed.add_field(name="📊 進捗", value="⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜ (0%)", inline=False)
             
             try:
-                await response_msg.edit(embed=finish_focus_embed)
+                await response_msg.edit(finish_focus_embed)
                 await interaction.channel.send(content=f"🔔 {interaction.user.mention} 集中フェーズが終了しました！休憩を取りましょう！")
             except discord.NotFound:
                 pass
@@ -768,7 +857,7 @@ async def pomodoro(interaction: discord.Interaction):
                 updated_embed.add_field(name="📊 進捗", value=f"{make_progress_bar(percent)} ({percent}%)", inline=False)
                 
                 try:
-                    await response_msg.edit(embed=updated_embed)
+                    await response_msg.edit(updated_embed)
                 except discord.NotFound:
                     return
 
@@ -780,7 +869,7 @@ async def pomodoro(interaction: discord.Interaction):
                 color=0xff9966
             )
             try:
-                await response_msg.edit(embed=all_done_embed)
+                await response_msg.edit(all_done_embed)
                 await interaction.channel.send(content=f"⏰ {interaction.user.mention} 休憩フェーズが終了しました！お疲れ様でした！")
             except discord.NotFound:
                 pass
@@ -793,7 +882,7 @@ async def pomodoro(interaction: discord.Interaction):
                 color=0x666666
             )
             try:
-                await response_msg.edit(embed=cancel_embed)
+                await response_msg.edit(cancel_embed)
             except discord.NotFound:
                 pass
         finally:
@@ -989,7 +1078,7 @@ def callback():
     }
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0'
     }
     attempts = 0
     r = None
