@@ -175,7 +175,7 @@ async def update_status_loop():
         
     await bot.change_presence(activity=activity)
 
-# 💤 【新機能】居眠り・放置防止ループ（1分ごとに巡回）
+# 💤 居眠り・放置防止ループ（1分ごとに巡回）
 @tasks.loop(minutes=1)
 async def check_afk_loop():
     await bot.wait_until_ready()
@@ -209,7 +209,7 @@ async def check_afk_loop():
                 # ミュートが解除されたら放置タイマーをリセット
                 afk_trackers.pop(str(member.id), None)
 
-# 👑 【新機能】週刊頑張り屋表彰ループ（毎週月曜日 AM 7:00）
+# 👑 週刊頑張り屋表彰ループ（毎週月曜日 AM 7:00）
 @tasks.loop(time=datetime.strptime("07:00", "%H:%M").time())
 async def weekly_ranking_loop():
     await bot.wait_until_ready()
@@ -755,7 +755,7 @@ async def worda(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# ⏱️ ポモドーロタイマー（集中モード・ニックネーム連携）
+# ⏱️ ポモドーロタイマー
 # ==========================================
 
 def make_progress_bar(percent, size=10):
@@ -907,12 +907,13 @@ async def pomo_stop(interaction: discord.Interaction):
     await interaction.response.send_message("⏹️ ポモドーロタイマーを停止させました。ゆっくり体を休めてくださいね！")
 
 # ==========================================
-# 🌐 Flask Webサイト 側の設定
+# 🌐 Flask Webサイト 側の設定 (デザイン・グラフ強化)
 # ==========================================
 app = Flask(__name__)
 app.secret_key = 'chillzone_secret_key_look_at_me'
 quiz_sessions = {}
 
+# デザインを大幅リファインした新テンプレート
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ja">
@@ -920,35 +921,325 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈 . Official</title>
-    <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&family=Shippori+Mincho:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        :root { --bg-color: #f7f5f0; --main-color: #e8a7a1; --text-color: #4a4a4a; --card-bg: #ffffff; --accent-color: #ebd3c8; }
-        body { font-family: 'Shippori Mincho', serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 0; display: flex; flex-direction: column; align-items: center; }
-        header { margin-top: 50px; text-align: center; }
-        h1 { font-size: 2.8rem; margin-bottom: 5px; letter-spacing: 0.15em; color: var(--text-color); }
-        .subtitle { font-size: 0.95rem; color: #888; letter-spacing: 0.05em; }
-        .tab-menu { display: flex; background-color: #e2dfd8; padding: 6px; border-radius: 30px; margin: 35px 0; flex-wrap: wrap; justify-content: center; }
-        .tab-btn { font-family: 'Shippori Mincho', serif; background: none; border: none; padding: 10px 24px; font-size: 1rem; cursor: pointer; color: var(--text-color); border-radius: 25px; transition: all 0.3s ease; }
-        .tab-btn.active { background-color: var(--main-color); color: white; font-weight: bold; }
-        .container { width: 90%; max-width: 750px; margin-bottom: 60px; }
-        .tab-content { display: none; background-color: var(--card-bg); padding: 45px; border-radius: 28px; box-shadow: 0 10px 40px rgba(0,0,0,0.02); line-height: 1.9; }
-        .tab-content.active { display: block; animation: fadeIn 0.4s ease; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-        h2 { font-size: 1.6rem; border-bottom: 2px solid var(--accent-color); padding-bottom: 10px; margin-top: 0; margin-bottom: 25px; color: #3a3a3a; }
-        h3 { font-size: 1.25rem; color: var(--main-color); margin-top: 30px; margin-bottom: 10px; }
-        p { margin: 15px 0; font-size: 1.05rem; text-align: justify; }
-        ul, ol { padding-left: 20px; }
-        li { margin-bottom: 12px; font-size: 1.02rem; }
-        .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 25px; }
-        .feature-card { background-color: var(--bg-color); padding: 20px; border-radius: 18px; border: 1px solid rgba(0,0,0,0.03); }
-        .feature-card strong { color: var(--main-color); font-size: 1.1rem; }
-        .quiz-container { background: #fffafa; padding: 30px; border-radius: 20px; margin-top: 25px; text-align: center; border: 2px dashed var(--main-color); }
-        .quiz-input { font-family: monospace; font-size: 1.4rem; padding: 8px; width: 100px; text-align: center; border-radius: 12px; border: 2px solid var(--accent-color); outline: none; margin-bottom: 15px; }
-        .btn-submit { display: block; margin: 10px auto 0 auto; background-color: var(--main-color); color: white; border: none; padding: 12px 35px; border-radius: 25px; cursor: pointer; font-family: 'Shippori Mincho', serif; font-weight: bold; font-size: 1rem; }
-        .code-block { background: #fdfaf6; padding: 20px; border-radius: 16px; border-left: 4px solid var(--main-color); font-family: monospace; font-size: 0.95rem; overflow-x: auto; line-height: 1.7; }
-        .faq-item { margin-bottom: 25px; border-bottom: 1px dashed var(--accent-color); padding-bottom: 15px; }
-        .faq-question { font-weight: bold; color: var(--text-color); font-size: 1.1rem; margin-bottom: 5px; }
-        .faq-answer { color: #666; font-size: 1rem; }
+        :root { 
+            --bg-color: #FAF6F0;       /* より柔らかいミルクホワイト */
+            --main-color: #E8A7A1;     /* メインのくすみピンク */
+            --sub-color: #4AB3E3;      /* アクセントの涼しいブルー */
+            --text-color: #443F3F;     /* 優しいココアブラウン */
+            --card-bg: #FFFFFF; 
+            --accent-color: #F3ECE2;   /* さらに柔らかいベージュ */
+            --shadow-smooth: 0 12px 40px rgba(180, 165, 150, 0.08); /* 滑らかな陰影 */
+        }
+        
+        * { box-sizing: border-box; }
+        
+        body { 
+            font-family: 'Noto Sans JP', sans-serif; 
+            background-color: var(--bg-color); 
+            color: var(--text-color); 
+            margin: 0; 
+            padding: 0; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            min-height: 100vh;
+        }
+        
+        header { 
+            margin-top: 60px; 
+            text-align: center; 
+            padding: 0 20px;
+        }
+        
+        header h1 { 
+            font-family: 'Shippori Mincho', serif;
+            font-size: 3.5rem; 
+            margin: 0; 
+            letter-spacing: 0.18em; 
+            color: var(--text-color); 
+            font-weight: 700;
+        }
+        
+        .subtitle { 
+            font-size: 1.05rem; 
+            color: #A39696; 
+            letter-spacing: 0.08em; 
+            margin-top: 8px;
+            font-weight: 400;
+        }
+        
+        /* タブメニューデザイン */
+        .tab-menu { 
+            display: flex; 
+            background-color: #EFEBE4; 
+            padding: 6px; 
+            border-radius: 40px; 
+            margin: 40px 0; 
+            flex-wrap: wrap; 
+            justify-content: center;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);
+        }
+        
+        .tab-btn { 
+            font-family: 'Noto Sans JP', sans-serif; 
+            background: none; 
+            border: none; 
+            padding: 12px 28px; 
+            font-size: 0.95rem; 
+            cursor: pointer; 
+            color: var(--text-color); 
+            border-radius: 30px; 
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); 
+            font-weight: 500;
+            letter-spacing: 0.03em;
+        }
+        
+        .tab-btn.active { 
+            background-color: var(--main-color); 
+            color: white; 
+            font-weight: 700;
+            box-shadow: 0 4px 15px rgba(232, 167, 161, 0.4);
+        }
+        
+        .container { 
+            width: 90%; 
+            max-width: 850px; 
+            margin-bottom: 80px; 
+        }
+        
+        /* メインコンテンツカード */
+        .tab-content { 
+            display: none; 
+            background-color: var(--card-bg); 
+            padding: 50px; 
+            border-radius: 36px; 
+            box-shadow: var(--shadow-smooth); 
+            line-height: 2.0; 
+            border: 1px solid rgba(255, 255, 255, 0.6);
+        }
+        
+        .tab-content.active { 
+            display: block; 
+            animation: cubic-bezier(0.16, 1, 0.3, 1) 0.6s forwards showUp; 
+        }
+        
+        @keyframes showUp {
+            from { opacity: 0; transform: translateY(15px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        h2 { 
+            font-family: 'Shippori Mincho', serif;
+            font-size: 1.8rem; 
+            border-bottom: 2px solid var(--accent-color); 
+            padding-bottom: 12px; 
+            margin-top: 0; 
+            margin-bottom: 30px; 
+            color: #3C3535;
+            letter-spacing: 0.05em;
+        }
+        
+        h3 { 
+            font-family: 'Shippori Mincho', serif;
+            font-size: 1.35rem; 
+            color: var(--main-color); 
+            margin-top: 35px; 
+            margin-bottom: 15px; 
+            letter-spacing: 0.05em;
+        }
+        
+        p { 
+            margin: 18px 0; 
+            font-size: 1.05rem; 
+            text-align: justify; 
+            color: #5C5555;
+        }
+        
+        ul, ol { padding-left: 24px; color: #5C5555; }
+        li { margin-bottom: 15px; font-size: 1.02rem; }
+        
+        /* グリッドレイアウト */
+        .feature-grid { 
+            display: grid; 
+            grid-template-columns: 1fr 1fr; 
+            gap: 25px; 
+            margin-top: 30px; 
+        }
+        
+        .feature-card { 
+            background-color: #FDFCFB; 
+            padding: 25px; 
+            border-radius: 24px; 
+            border: 1px solid #F5EFE6; 
+            transition: all 0.3s ease;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(220, 200, 190, 0.15);
+            border-color: var(--main-color);
+        }
+        
+        .feature-card strong { 
+            color: var(--main-color); 
+            font-size: 1.15rem; 
+            font-family: 'Shippori Mincho', serif;
+        }
+        
+        /* グラフ＆統計ボードデザイン */
+        .stats-dashboard {
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 30px;
+            background-color: #FDFCFB;
+            padding: 30px;
+            border-radius: 28px;
+            border: 1px solid #F5EFE6;
+            margin-top: 30px;
+        }
+        
+        .chart-box {
+            width: 280px;
+            height: 280px;
+            position: relative;
+        }
+        
+        .stats-summary {
+            flex: 1;
+            min-width: 250px;
+        }
+        
+        .stat-item {
+            margin-bottom: 20px;
+        }
+        
+        .stat-number {
+            font-size: 2.2rem;
+            font-weight: 700;
+            color: var(--main-color);
+            font-family: 'Shippori Mincho', serif;
+        }
+        
+        /* コマンドカード */
+        .cmd-box {
+            background-color: #FAF8F5;
+            border-radius: 20px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-left: 5px solid var(--main-color);
+            transition: all 0.2s ease;
+        }
+        
+        .cmd-box:hover {
+            background-color: #FFF;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.03);
+            transform: translateX(5px);
+        }
+        
+        .cmd-title {
+            font-family: monospace;
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #3C3535;
+        }
+        
+        .cmd-desc {
+            font-size: 0.95rem;
+            color: #726A6A;
+            margin: 5px 0 0 0;
+            line-height: 1.6;
+        }
+        
+        /* クイズ・認証用 */
+        .quiz-container { 
+            background: #FFFBFB; 
+            padding: 40px; 
+            border-radius: 28px; 
+            margin-top: 30px; 
+            text-align: center; 
+            border: 2px dashed var(--main-color); 
+        }
+        
+        .quiz-input { 
+            font-family: monospace; 
+            font-size: 1.8rem; 
+            padding: 10px; 
+            width: 130px; 
+            text-align: center; 
+            border-radius: 16px; 
+            border: 2px solid var(--main-color); 
+            outline: none; 
+            margin-bottom: 20px; 
+            color: var(--text-color);
+            background-color: #FFF;
+        }
+        
+        .btn-submit { 
+            display: inline-block; 
+            margin-top: 10px; 
+            background-color: var(--main-color); 
+            color: white; 
+            border: none; 
+            padding: 14px 45px; 
+            border-radius: 30px; 
+            cursor: pointer; 
+            font-family: 'Noto Sans JP', sans-serif; 
+            font-weight: 700; 
+            font-size: 1rem; 
+            box-shadow: 0 5px 15px rgba(232, 167, 161, 0.3);
+            transition: all 0.3s ease;
+        }
+        
+        .btn-submit:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(232, 167, 161, 0.4);
+        }
+        
+        /* FAQアコーディオン風 */
+        .faq-card {
+            background-color: #FAF8F5;
+            padding: 25px;
+            border-radius: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #EFECE6;
+        }
+        
+        .faq-q {
+            font-weight: 700;
+            font-size: 1.1rem;
+            color: var(--text-color);
+            margin: 0 0 8px 0;
+            display: flex;
+            align-items: center;
+        }
+        
+        .faq-q::before {
+            content: "Q.";
+            color: var(--main-color);
+            font-size: 1.4rem;
+            margin-right: 10px;
+            font-family: 'Shippori Mincho', serif;
+        }
+        
+        .faq-a {
+            font-size: 1rem;
+            color: #6E6666;
+            margin: 0;
+            line-height: 1.8;
+        }
+
+        /* レスポンシブ対応 */
+        @media (max-width: 768px) {
+            .feature-grid { grid-template-columns: 1fr; }
+            .stats-dashboard { flex-direction: column; text-align: center; }
+            header h1 { font-size: 2.6rem; }
+            .tab-content { padding: 30px 20px; }
+        }
     </style>
 </head>
 <body>
@@ -958,6 +1249,7 @@ HTML_TEMPLATE = """
     </header>
     <div class="tab-menu">
         <button class="tab-btn active" onclick="openTab('home')">コンセプト</button>
+        <button class="tab-btn" onclick="openTab('stats')">サーバー統計＆グラフ</button>
         <button class="tab-btn" onclick="openTab('rules')">利用規約</button>
         <button class="tab-btn" onclick="openTab('commands')">コマンド解説</button>
         <button class="tab-btn" onclick="openTab('faq')">よくある質問</button>
@@ -972,14 +1264,36 @@ HTML_TEMPLATE = """
             <div class="feature-grid">
                 <div class="feature-card">
                     <p><strong>🕒 自分のペースで、着実に</strong></p>
-                    <p style="font-size:0.95rem; line-height:1.6;">ボイスチャンネルに接続するだけで、Botがあなたの作業時間を1分単位で自動的に記録・計測します。日々の努力の積み重ねがレベルという形で可視化されます。</p>
+                    <p style="font-size:0.95rem; line-height:1.7;">ボイスチャンネルに接続するだけで、Botがあなたの作業時間を1分単位で自動的に記録・計測します。日々の努力の積み重ねがレベルという形で可視化されます。</p>
                 </div>
                 <div class="feature-card">
                     <p><strong>🚪 集中を邪魔しない個室制度</strong></p>
-                    <p style="font-size:0.95rem; line-height:1.6;">ボタン1つで「自分専用の作業VC（カフェルーム）」を設置できます。不要になったら自動で消滅するため、面倒な設定や誰かとバッティングする心配もありません。</p>
+                    <p style="font-size:0.95rem; line-height:1.7;">ボタン1つで「自分専用の作業VC（カフェルーム）」を設置できます。不要になったら自動で消滅するため、面倒な設定や誰かとバッティングする心配もありません。</p>
                 </div>
             </div>
         </div>
+
+        <div id="stats" class="tab-content">
+            <h2>📈 サーバー統計 ＆ 頑張り屋割合</h2>
+            <p>サーバー全体の累積データと、現在上位のメンバーによる作業時間の割合グラフです！一緒にモチベーションを共有して、みんなで高め合いましょう。🔥</p>
+            
+            <div class="stats-dashboard">
+                <div class="stats-summary">
+                    <div class="stat-item">
+                        <div style="font-size:0.9rem; color:#888;">登録されている作業メンバー数</div>
+                        <div class="stat-number">{{ total_users }} <span style="font-size:1.1rem; color:#555;">人</span></div>
+                    </div>
+                    <div class="stat-item">
+                        <div style="font-size:0.9rem; color:#888;">サーバー全体での総作業時間</div>
+                        <div class="stat-number">{{ total_minutes }} <span style="font-size:1.1rem; color:#555;">分</span></div>
+                    </div>
+                </div>
+                <div class="chart-box">
+                    <canvas id="timeRatioChart"></canvas>
+                </div>
+            </div>
+        </div>
+
         <div id="rules" class="tab-content">
             <h2>📜 コミュニティ・ガイドライン（利用規約）</h2>
             <p>すべてのメンバーが心地よく、安心して勉強や作業に集中できるよう、以下のルールを定めています。</p>
@@ -992,44 +1306,61 @@ HTML_TEMPLATE = """
                 <li><strong>安全を脅かす行為：</strong> 個人情報（本名、学校名、住所等）の公開や聞き出し、他者への誹謗中傷。</li>
             </ul>
         </div>
+
         <div id="commands" class="tab-content">
             <h2>⌨️ 搭載機能＆コマンドガイド</h2>
-            <div class="code-block">
-                <strong>💡 /status （ステータス確認）</strong><br>
-                ➔ 合計作業時間、現在のレベル、本日の学習目標進捗、さらに【🔥連続自習日数】と【📊直近1週間のグラフ】を表示します。<br><br>
-                <strong>🎯 /goal [分] （本日の目標設定）</strong><br>
-                ➔ 今日の勉強目標時間を設定します。目標に対する％ゲージが `/status` に反映されます。<br><br>
-                <strong>🏆 /ranking （ランキング表示）</strong><br>
-                ➔ 作業時間が長いユーザー上位10名を表示します。<br><br>
-                <strong>🔔 /bump （バンプ通知タイマー）</strong><br>
-                ➔ 2時間後に自動で「BUMPの時間だよ！」とお知らせします。<br><br>
-                <strong>⏱️ /pomodoro （ポモドーロ開始）</strong><br>
-                ➔ 25分集中＆5分休憩のタイマー。ニックネームに自動で `[✍️集中中]` などのタグが付与されます。<br><br>
-                <strong>⏹️ /pomo_stop （ポモドーロ停止）</strong><br>
-                ➔ 実行中のポモドーロタイマーを強制終了し、ニックネームを元の名前に戻します。<br><br>
-                <strong>💬 /addword [言葉] [返答] （単語登録）</strong><br>
-                ➔ チャットでその言葉が送信されたとき、Botが自動で反応してメッセージを返します。<br><br>
-                <strong>💬 /worda （単語一覧）</strong><br>
-                ➔ 現在登録されている自動返答ワードの一覧をカードで表示します。<br><br>
-                <strong>🚨 /report [理由] [対象者(任意)] （管理者へ通報）</strong><br>
-                ➔ 荒らし行為やバグなど、サーバーの管理者全員にDMで通報を送ることができます。<br><br>
-                <strong>📊 /server_stats （サーバー統計）</strong><br>
-                ➔ サーバー全体の登録人数や累計勉強時間を確認できます。<br><br>
-                <strong>🎲 /dice （サイコロ）</strong><br>
-                ➔ 息抜きや、勉強の目標ページを決める際にサイコロを振ることができます。
+            <p>Discordサーバー内で、いつでも以下のスラッシュコマンドを実行してスタッツ確認やタイマー操作を行えます。</p>
+            
+            <div class="cmd-box">
+                <div class="cmd-title">/status</div>
+                <p class="cmd-desc">本日の勉強目標への％進捗バー、現在のレベル、そして【🔥連続自習継続日数】と【📊直近1週間の作業グラフ】を表示します。</p>
+            </div>
+            <div class="cmd-box">
+                <div class="cmd-title">/goal [分]</div>
+                <p class="cmd-desc">今日の作業目標時間を分単位で設定します。設定した内容は `/status` にリアルタイムに反映されます。</p>
+            </div>
+            <div class="cmd-box">
+                <div class="cmd-title">/pomodoro</div>
+                <p class="cmd-desc">25分集中＆5分休憩タイマーを作動させます。ニックネームに自動で [✍️集中中] 等のタグが付与されます。</p>
+            </div>
+            <div class="cmd-box">
+                <div class="cmd-title">/pomo_stop</div>
+                <p class="cmd-desc">現在作動しているポモドーロタイマーを終了させ、ニックネームを元の名前に戻します。</p>
+            </div>
+            <div class="cmd-box">
+                <div class="cmd-title">/ranking</div>
+                <p class="cmd-desc">サーバー内で作業時間が長いユーザー上位10名を表示します。</p>
+            </div>
+            <div class="cmd-box">
+                <div class="cmd-title">/bump</div>
+                <p class="cmd-desc">BUMPを実行したタイミングでセットすると、2時間後にBotがお知らせを送信します。</p>
+            </div>
+            <div class="cmd-box">
+                <div class="cmd-title">/addword [トリガー] [返答]</div>
+                <p class="cmd-desc">特定の言葉にBotが自動でメッセージを返すよう、言葉のペアを登録します。</p>
+            </div>
+            <div class="cmd-box">
+                <div class="cmd-title">/worda</div>
+                <p class="cmd-desc">現在登録されている自動返答ワードの一覧をカード形式で一覧表示します。</p>
+            </div>
+            <div class="cmd-box">
+                <div class="cmd-title">/report [理由] [対象ユーザー(任意)]</div>
+                <p class="cmd-desc">不具合や荒らし行為を管理者のDMに瞬時に通報します。</p>
             </div>
         </div>
+
         <div id="faq" class="tab-content">
             <h2>❓ よくある質問（FAQ）</h2>
-            <div class="faq-item">
-                <p class="faq-question">Q. ボイスチャンネルに入っても作業時間が記録されません。</p>
-                <p class="faq-answer">A. 接続から切断までの差分を計測しています。1分未満の短い接続は記録されません。</p>
+            <div class="faq-card">
+                <p class="faq-q">ボイスチャンネルに入っても作業時間が記録されません。</p>
+                <p class="faq-a">接続から切断までの差分を計測しています。1分未満の短い接続はカウント対象外となります。</p>
             </div>
-            <div class="faq-item">
-                <p class="faq-question">Q. カフェルーム（個室）は自動で消えますか？</p>
-                <p class="faq-answer">A. はい、全員が退出して0人になると自動消滅します。また、作成から24時間経過した部屋も自動で消去されます。</p>
+            <div class="faq-card">
+                <p class="faq-q">カフェルーム（個室）は自動で消えますか？</p>
+                <p class="faq-a">はい、全員が退出して0人になると自動消滅します。また、作成から24時間が経過した場合も安全のため自動で消去されます。</p>
             </div>
         </div>
+
         <div id="verify" class="tab-content">
             <h2>🔒 サーバー認証テスト</h2>
             {% if user_id and user_id != "HOME" %}
@@ -1045,6 +1376,7 @@ HTML_TEMPLATE = """
             {% endif %}
         </div>
     </div>
+    
     <script>
         function openTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -1055,14 +1387,114 @@ HTML_TEMPLATE = """
             if(targetBtn) targetBtn.classList.add('active');
         }
         {% if user_id and user_id != "HOME" %} openTab('verify'); {% endif %}
+        
+        // --- 📊 円グラフの描画システム (Chart.js) ---
+        const ctx = document.getElementById('timeRatioChart').getContext('2d');
+        
+        // サーバーから渡されたデータをJavaScriptに変換
+        const chartLabels = {{ chart_labels | tojson }};
+        const chartData = {{ chart_data | tojson }};
+        
+        const timeRatioChart = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: chartLabels,
+                datasets: [{
+                    data: chartData,
+                    backgroundColor: [
+                        '#E8A7A1', // くすみピンク
+                        '#4AB3E3', // ライトブルー
+                        '#EBD3C8', // ミルクティーベージュ
+                        '#A2D2FF', // パステルブルー
+                        '#D8B4F8', // ラベンダー
+                        '#E2DFD8'  // その他
+                    ],
+                    borderWidth: 2,
+                    borderColor: '#FFFFFF'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            font: {
+                                family: 'Noto Sans JP',
+                                size: 11
+                            },
+                            color: '#443F3F',
+                            boxWidth: 12
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return ` ${context.label}: ${context.raw} 分`;
+                            }
+                        }
+                    }
+                },
+                cutout: '65%' // 中央の穴のサイズ（ドーナツ型）
+            }
+        });
     </script>
 </body>
 </html>
 """
 
+# ランキングデータなどからグラフ用データを抽出する補助関数
+def get_chart_data():
+    stats = load_stats()
+    if not stats:
+        return ["登録なし"], [100]
+        
+    # 総時間を計算しつつ降順ソート
+    sorted_users = sorted(stats.items(), key=lambda x: x[1].get("total_minutes", 0.0), reverse=True)
+    
+    labels = []
+    data_values = []
+    
+    # 上位5名分
+    top_5 = sorted_users[:5]
+    for uid, udata in top_5:
+        total_m = udata.get("total_minutes", 0.0)
+        if total_m > 0:
+            labels.append(udata.get("username", "不明なユーザー"))
+            data_values.append(round(total_m, 1))
+            
+    # 6位以下のメンバーを「その他」に合算
+    other_minutes = sum(udata.get("total_minutes", 0.0) for uid, udata in sorted_users[5:])
+    if other_minutes > 0:
+        labels.append("その他")
+        data_values.append(round(other_minutes, 1))
+        
+    if not labels:
+        return ["記録なし"], [1]
+        
+    return labels, data_values
+
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="Discordの認証パネルのボタンからアクセスすると、ここに計算クイズが表示されます。")
+    stats = load_stats()
+    total_users = len(stats)
+    total_minutes = round(sum(data.get("total_minutes", 0.0) for data in stats.values()), 1)
+    
+    labels, data_vals = get_chart_data()
+    
+    return render_template_string(
+        HTML_TEMPLATE, 
+        username="ゲスト", 
+        user_id="HOME", 
+        num1=0, 
+        num2=0, 
+        msg="Discordの認証パネルのボタンからアクセスすると、ここに計算クイズが表示されます。",
+        total_users=total_users,
+        total_minutes=total_minutes,
+        chart_labels=labels,
+        chart_data=data_vals
+    )
 
 @app.route('/callback')
 def callback():
@@ -1095,14 +1527,20 @@ def callback():
         except Exception as e:
             time.sleep(3)
         attempts += 1
+        
+    stats = load_stats()
+    total_users = len(stats)
+    total_minutes = round(sum(data.get("total_minutes", 0.0) for data in stats.values()), 1)
+    labels, data_vals = get_chart_data()
+
     if r is None or r.status_code != 200:
-        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="⚠️ 現在Discord側で一時的なアクセス規制が発生しています。5分ほど待ってやり直してください。", msg_color="red")
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="⚠️ 現在Discord側で一時的なアクセス規制が発生しています。5分ほど待ってやり直してください。", msg_color="red", total_users=total_users, total_minutes=total_minutes, chart_labels=labels, chart_data=data_vals)
     try:
         access_token = r.json().get('access_token')
     except:
-        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="認証データの解析に失敗しました。", msg_color="red")
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="認証データの解析に失敗しました。", msg_color="red", total_users=total_users, total_minutes=total_minutes, chart_labels=labels, chart_data=data_vals)
     if not access_token:
-        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="トークンが空です。", msg_color="red")
+        return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="トークンが空です。", msg_color="red", total_users=total_users, total_minutes=total_minutes, chart_labels=labels, chart_data=data_vals)
     
     user_headers = {'Authorization': f'Bearer {access_token}', 'User-Agent': 'Mozilla/5.0'}
     user_r = requests.get('https://discord.com/api/users/@me', headers=user_headers).json()
@@ -1110,15 +1548,21 @@ def callback():
     n1, n2 = random.randint(1, 20), random.randint(1, 20)
     if discord_id:
         quiz_sessions[str(discord_id)] = { 'correct_answer': n1 + n2, 'username': discord_username, 'num1': n1, 'num2': n2 }
-    return render_template_string(HTML_TEMPLATE, username=discord_username, user_id=discord_id, num1=n1, num2=n2, msg=None)
+    return render_template_string(HTML_TEMPLATE, username=discord_username, user_id=discord_id, num1=n1, num2=n2, msg=None, total_users=total_users, total_minutes=total_minutes, chart_labels=labels, chart_data=data_vals)
 
 @app.route('/submit-quiz', methods=['POST'])
 def submit_quiz():
     user_id = request.form.get('user_id')
     user_answer = request.form.get('answer')
     session_data = quiz_sessions.get(str(user_id))
+    
+    stats = load_stats()
+    total_users = len(stats)
+    total_minutes = round(sum(data.get("total_minutes", 0.0) for data in stats.values()), 1)
+    labels, data_vals = get_chart_data()
+
     if not session_data:
-        return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=0, num2=0, msg="タイムアウトしました。", msg_color="red")
+        return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=0, num2=0, msg="タイムアウトしました。", msg_color="red", total_users=total_users, total_minutes=total_minutes, chart_labels=labels, chart_data=data_vals)
     try:
         if int(user_answer) == session_data['correct_answer']:
             guild = bot.get_guild(GUILD_ID)
@@ -1131,12 +1575,12 @@ def submit_quiz():
                         if role:
                             asyncio.run_coroutine_threadsafe(member.add_roles(role), bot.loop).result(timeout=10)
                             quiz_sessions.pop(str(user_id), None)
-                            return render_template_string(HTML_TEMPLATE, username="認証完了", user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg="✨ 正解です！認証が完了し、ロールが付与されました！", msg_color="green")
+                            return render_template_string(HTML_TEMPLATE, username="認証完了", user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg="✨ 正解です！認証が完了し、ロールが付与されました！", msg_color="green", total_users=total_users, total_minutes=total_minutes, chart_labels=labels, chart_data=data_vals)
                 except Exception as e:
-                    return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg=f"❌ 失敗: {e}", msg_color="red")
+                    return render_template_string(HTML_TEMPLATE, username="エラー", user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg=f"❌ 失敗: {e}", msg_color="red", total_users=total_users, total_minutes=total_minutes, chart_labels=labels, chart_data=data_vals)
     except ValueError:
         pass
-    return render_template_string(HTML_TEMPLATE, username=session_data['username'], user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg="❌ 答えが違います。", msg_color="red")
+    return render_template_string(HTML_TEMPLATE, username=session_data['username'], user_id=user_id, num1=session_data['num1'], num2=session_data['num2'], msg="❌ 答えが違います。", msg_color="red", total_users=total_users, total_minutes=total_minutes, chart_labels=labels, chart_data=data_vals)
 
 def run_flask():
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
