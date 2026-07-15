@@ -1,6 +1,6 @@
 import os 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 from discord.ui import Button, View
 from flask import Flask, render_template_string, request, redirect, url_for
@@ -67,6 +67,12 @@ room_counter = 1
 active_rooms = {}     
 
 active_bump_timers = {}
+# ポモドーロタイマーの実行情報（タスクとメッセージオブジェクト）を管理する辞書
+# { ユーザーID: { "task": タスク, "message": Discordメッセージ } }
+active_pomo_timers = {}
+
+# ⏱️ Bot起動時刻の記録
+bot_start_time = datetime.now()
 
 # 🔑 認証用View
 class VerificationView(View):
@@ -123,11 +129,43 @@ class PrivateRoomView(View):
         
         await interaction.response.send_message(f"✨ 専用の作業部屋を作成しました！➔ {new_channel.mention}\n※退出するか、24時間経過すると自動で削除されます。", ephemeral=True)
 
+# 🔄 ステータスを30秒周期で交互に切り替えるループタスク
+@tasks.loop(seconds=30)
+async def update_status_loop():
+    await bot.wait_until_ready()
+    current_time = int(time.time())
+    
+    working_users = 0
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        for vc in guild.voice_channels:
+            working_users += len([m for m in vc.members if not m.bot])
+
+    uptime = datetime.now() - bot_start_time
+    hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+    minutes, _ = divmod(remainder, 60)
+    
+    if hours > 0:
+        uptime_str = f"起動中: {hours}時間{minutes}分"
+    else:
+        uptime_str = f"起動中: {minutes}分"
+
+    if (current_time // 30) % 2 == 0:
+        activity = discord.Activity(type=discord.ActivityType.playing, name=f"{working_users}人が作業中 ✍️")
+    else:
+        activity = discord.Activity(type=discord.ActivityType.watching, name=uptime_str)
+        
+    await bot.change_presence(activity=activity)
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
     bot.add_view(PrivateRoomView()) 
     bot.loop.create_task(check_room_expiry()) 
+    
+    if not update_status_loop.is_running():
+        update_status_loop.start()
+        
     try:
         synced = await bot.tree.sync()
         print(f"スラッシュコマンドを {len(synced)} 個同期しました。")
@@ -275,6 +313,213 @@ async def ranking(interaction: discord.Interaction):
     embed.description = ranking_text
     await interaction.response.send_message(embed=embed)
 
+# 📊 サーバーの全体統計を表示するコマンド
+@bot.tree.command(name="server_stats", description="サーバー全体の作業統計データを表示します")
+async def server_stats(interaction: discord.Interaction):
+    stats = load_stats()
+    total_users = len(stats)
+    total_minutes = sum(data.get("total_minutes", 0.0) for data in stats.values())
+    
+    uptime = datetime.now() - bot_start_time
+    hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+    minutes, _ = divmod(remainder, 60)
+    
+    embed = discord.Embed(title="📈 𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 . サーバー統計", color=0x4ab3e3)
+    embed.add_field(name="👥 登録作業メンバー数", value=f"{total_users} 人", inline=True)
+    embed.add_field(name="⏱️ 累計作業時間", value=f"{round(total_minutes, 1)} 分", inline=True)
+    embed.add_field(name="🤖 Botの連続稼働時間", value=f"{hours}時間{minutes}分", inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+# 🧹 残ってしまったカフェルームを一括お掃除（削除）する管理者限定コマンド
+@bot.tree.command(name="clean_rooms", description="【管理者専用】作成されたカフェルームを一括ですべて削除します")
+@app_commands.checks.has_permissions(administrator=True)
+async def clean_rooms(interaction: discord.Interaction):
+    global active_rooms
+    guild = interaction.guild
+    category = guild.get_channel(CATEGORY_ID)
+    
+    if not category:
+        await interaction.response.send_message("❌ 指定のカテゴリが見つかりません。", ephemeral=True)
+        return
+        
+    await interaction.response.defer(ephemeral=True)
+    
+    deleted_count = 0
+    for vc in category.voice_channels:
+        if vc.name.startswith("カフェルーム"):
+            try:
+                await vc.delete()
+                deleted_count += 1
+            except Exception as e:
+                print(f"お掃除中のチャンネル削除失敗: {e}")
+                
+    active_rooms.clear()
+    await interaction.followup.send(f"🧹 お掃除が完了しました！計 {deleted_count} 個のカフェルームを消去しました。", ephemeral=True)
+
+# 🎲 息抜き用のサイコロコマンド
+@bot.tree.command(name="dice", description="指定した数と面のサイコロを振ります (例: 個数=2, 面数=6)")
+@app_commands.describe(amount="サイコロの個数 (最大10)", sides="サイコロの面数 (最大100)")
+async def dice(interaction: discord.Interaction, amount: int = 1, sides: int = 6):
+    if amount < 1 or amount > 10:
+        await interaction.response.send_message("❌ 個数は 1〜10個 の間で指定してください。", ephemeral=True)
+        return
+    if sides < 2 or sides > 100:
+        await interaction.response.send_message("❌ 面数は 2〜100面 の間で指定してください。", ephemeral=True)
+        return
+        
+    results = [random.randint(1, sides) for _ in range(amount)]
+    total = sum(results)
+    
+    embed = discord.Embed(
+        title="🎲 サイコロを振りました！",
+        description=f"**{amount}個**の**{sides}面ダイス**を振った結果はこちらです。",
+        color=0xe8a7a1
+    )
+    embed.add_field(name="🔢 出目", value=f"`{' , '.join(map(str, results))}`", inline=False)
+    embed.add_field(name="🎯 合計値", value=f"**{total}**", inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+# ==========================================
+# ⏱️ 進化版ポモドーロタイマー（10秒更新＆ゲージ表示機能）
+# ==========================================
+
+# 進捗バーを生成する補助関数
+def make_progress_bar(percent, size=10):
+    filled = int(round(size * percent / 100))
+    bar = "🟥" * filled + "⬜" * (size - filled)
+    return bar
+
+@bot.tree.command(name="pomodoro", description="リアルタイム更新式ポモドーロタイマーを開始します（25分集中 ➔ 5分休憩）")
+async def pomodoro(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    
+    if user_id in active_pomo_timers:
+        await interaction.response.send_message("⚠️ すでにあなたのポモドーロタイマーが作動中です！一時停止するか、終了させてから再度行ってください。", ephemeral=True)
+        return
+        
+    # 初期状態のメッセージを送信
+    initial_embed = discord.Embed(
+        title="⏱️ ポモドーロタイマー始動",
+        description=f"{interaction.user.mention} さんのタイマーをセットしました！\n\n**🎯 集中フェーズ (25分間)** がスタートします！",
+        color=0xe8a7a1
+    )
+    initial_embed.add_field(name="⏱️ 残り時間", value="`25:00`", inline=True)
+    initial_embed.add_field(name="📊 進捗", value="⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜ (0%)", inline=False)
+    
+    await interaction.response.send_message(embed=initial_embed)
+    response_msg = await interaction.original_response()
+    
+    async def pomo_timer_task():
+        try:
+            # 1. 集中フェーズ (25分 = 1500秒)
+            total_focus = 1500
+            interval = 10
+            
+            for elapsed in range(0, total_focus, interval):
+                await asyncio.sleep(interval)
+                remaining = total_focus - (elapsed + interval)
+                rem_min, rem_sec = divmod(remaining, 60)
+                percent = min(round(((elapsed + interval) / total_focus) * 100), 100)
+                
+                # 埋め込みメッセージを10秒ごとにアップデート
+                updated_embed = discord.Embed(
+                    title="⏱️ ポモドーロタイマー（集中フェーズ）",
+                    description=f"{interaction.user.mention} さん、集中して作業に取り組みましょう！✍️",
+                    color=0xe8a7a1
+                )
+                updated_embed.add_field(name="⏱️ 残り時間", value=f"`{rem_min:02d}:{rem_sec:02d}`", inline=True)
+                updated_embed.add_field(name="📊 進捗", value=f"{make_progress_bar(percent)} ({percent}%)", inline=False)
+                
+                try:
+                    await response_msg.edit(embed=updated_embed)
+                except discord.NotFound:
+                    return  # メッセージが消された場合は終了
+
+            # 集中終了のお知らせ
+            finish_focus_embed = discord.Embed(
+                title="☕ 集中終了！お疲れ様でした",
+                description=f"{interaction.user.mention} さん、25分間の集中タイムが終了しました！🎉\n\n💤 **休憩フェーズ (5分間)** がスタートします。",
+                color=0x4ab3e3
+            )
+            finish_focus_embed.add_field(name="⏱️ 残り時間", value="`05:00`", inline=True)
+            finish_focus_embed.add_field(name="📊 進捗", value="⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜ (0%)", inline=False)
+            
+            try:
+                await response_msg.edit(embed=finish_focus_embed)
+                # メンション通知をチャンネルに送信
+                await interaction.channel.send(content=f"🔔 {interaction.user.mention} 集中フェーズが終了しました！休憩を取りましょう！")
+            except discord.NotFound:
+                pass
+
+            # 2. 休憩フェーズ (5分 = 300秒)
+            total_break = 300
+            for elapsed in range(0, total_break, interval):
+                await asyncio.sleep(interval)
+                remaining = total_break - (elapsed + interval)
+                rem_min, rem_sec = divmod(remaining, 60)
+                percent = min(round(((elapsed + interval) / total_break) * 100), 100)
+                
+                updated_embed = discord.Embed(
+                    title="☕ ポモドーロタイマー（休憩フェーズ）",
+                    description=f"{interaction.user.mention} さん、目を休めたり、ストレッチをしましょう！💤",
+                    color=0x4ab3e3
+                )
+                updated_embed.add_field(name="⏱️ 残り時間", value=f"`{rem_min:02d}:{rem_sec:02d}`", inline=True)
+                updated_embed.add_field(name="📊 進捗", value=f"{make_progress_bar(percent)} ({percent}%)", inline=False)
+                
+                try:
+                    await response_msg.edit(embed=updated_embed)
+                except discord.NotFound:
+                    return
+
+            # すべて完了
+            all_done_embed = discord.Embed(
+                title="🔔 ポモドーロ完了！",
+                description=f"{interaction.user.mention} さん、1サイクル（30分）がすべて終了しました！✨\n\n次のサイクルに進むか、一度しっかり休憩をとってくださいね。",
+                color=0xff9966
+            )
+            try:
+                await response_msg.edit(embed=all_done_embed)
+                await interaction.channel.send(content=f"⏰ {interaction.user.mention} 休憩フェーズが終了しました！お疲れ様でした！")
+            except discord.NotFound:
+                pass
+                
+        except asyncio.CancelledError:
+            # 強制停止時の表示更新
+            cancel_embed = discord.Embed(
+                title="⏹️ タイマー停止",
+                description=f"{interaction.user.mention} さんのポモドーロタイマーは強制停止されました。",
+                color=0x666666
+            )
+            try:
+                await response_msg.edit(embed=cancel_embed)
+            except discord.NotFound:
+                pass
+        finally:
+            active_pomo_timers.pop(user_id, None)
+
+    task = bot.loop.create_task(pomo_timer_task())
+    active_pomo_timers[user_id] = {
+        "task": task,
+        "message": response_msg
+    }
+
+# ポモドーロタイマーを強制ストップするコマンド
+@bot.tree.command(name="pomo_stop", description="現在実行中のポモドーロタイマーを強制終了します")
+async def pomo_stop(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    
+    if user_id not in active_pomo_timers:
+        await interaction.response.send_message("❌ 現在実行中のポモドーロタイマーはありません。", ephemeral=True)
+        return
+        
+    pomo_info = active_pomo_timers.pop(user_id)
+    pomo_info["task"].cancel()
+    
+    await interaction.response.send_message("⏹️ ポモドーロタイマーを停止させました。ゆっくり体を休めてくださいね！")
+
 # ==========================================
 # 🌐 Flask Webサイト 側の設定
 # ==========================================
@@ -322,7 +567,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <header>
-        <h1>𝖼|̅|𝗂𝗅𝗅 𝗓𝗈𝗇 .</h1>
+        <h1>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .</h1>
         <p class="subtitle">中高生・受験生のための、ゆるやかオンライン自習室</p>
     </header>
     <div class="tab-menu">
@@ -333,12 +578,10 @@ HTML_TEMPLATE = """
         <button class="tab-btn" id="verify-tab-nav" onclick="openTab('verify')">アカウント認証</button>
     </div>
     <div class="container">
-        <!-- 🏠 ホーム（コンセプト） -->
         <div id="home" class="tab-content active">
             <h2>ようこそ、ひと息つける、あなたの作業場へ。</h2>
             <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .」は、日々の勉強や創作、日課の作業など、それぞれの目標に向かって進む人たちのための、静かで温かいオンライン自習室です。</p>
             <p>1人だとなかなか集中が続かない、だけど誰かと賑やかに話しながらだと手が止まってしまう。そんな中高生や受験生の皆さんが、お互いの静かな気配を感じながら、適度な距離感でモチベーションを維持できる場所を目指しています。</p>
-            
             <h3>🌱 空間のこだわり</h3>
             <div class="feature-grid">
                 <div class="feature-card">
@@ -350,74 +593,50 @@ HTML_TEMPLATE = """
                     <p style="font-size:0.95rem; line-height:1.6;">ボタン1つで「自分専用の作業VC（カフェルーム）」を設置できます。不要になったら自動で消滅するため、面倒な設定や誰かとバッティングする心配もありません。</p>
                 </div>
             </div>
-            <p style="margin-top: 30px;">学校帰りにちょっとだけ寄って帰るカフェのように。あるいは、試験前の静まり返った図書館のように。あなたの心地よいペースで、この場所を自由に活用してください。</p>
         </div>
-
-        <!-- 📜 利用規約 -->
         <div id="rules" class="tab-content">
             <h2>📜 コミュニティ・ガイドライン（利用規約）</h2>
-            <p>すべてのメンバーが心地よく、安心して勉強や作業に集中できるよう、以下のルールを定めています。当サーバーに参加される際は、以下の規約を遵守してください。</p>
-            
+            <p>すべてのメンバーが心地よく、安心して勉強や作業に集中できるよう、以下のルールを定めています。</p>
             <h3>第1条（基本の心がけ）</h3>
-            <p>当コミュニティは、お互いに高め合いながら作業を行う場所です。他人の勉強や集中を妨げる行為、過度に騒がしい言動、相手を不快にさせる言葉遣いは慎み、常に思いやりを持って行動してください。</p>
-
+            <p>お互いに高め合いながら作業を行う場所です。他人の勉強や集中を妨げる行為、相手を不快にさせる言葉遣いは慎み、常に思いやりを持って行動してください。</p>
             <h3>第2条（禁止事項）</h3>
             <ul>
-                <li><strong>スパムおよび荒らし行為：</strong> 同一または類似するテキストの連投、ボイスチャンネルへの執拗な出入り、Botシステムへの過剰な負荷をかける行為。</li>
-                <li><strong>他者への迷惑行為：</strong> 勉強中のユーザーに対する無理な雑談の強要、不快なメンション送信、マイクを通じた不快な生活音・雑音の垂れ流し。</li>
-                <li><strong>安全を脅かす行為：</strong> 個人情報（本名、学校名、住所、電話番号、LINE等の外部連絡先）の公開や聞き出し、他者への誹謗中傷、公序良俗に反するコンテンツの共有。</li>
-                <li><strong>アカウント認証の悪用：</strong> 複数アカウントを用いたシステム操作、計算クイズの不正攻略、認証プログラムの不適切な利用。</li>
+                <li><strong>スパムおよび荒らし行為：</strong> 同一または類似するテキストの連投、ボイスチャンネルへの執拗な出入り、Botへの過剰負荷。</li>
+                <li><strong>他者への迷惑行為：</strong> 勉強中のユーザーに対する無理な雑談の強要、マイクを通じた不快な生活音・雑音の垂れ流し。</li>
+                <li><strong>安全を脅かす行為：</strong> 個人情報（本名、学校名、住所等）の公開や聞き出し、他者への誹謗中傷。</li>
             </ul>
-
-            <h3>第3条（違反への対応について）</h3>
-            <p>上記の規約に違反する行為が見受けられた場合、管理者の裁量により、以下の措置を実施します。</p>
-            <ol>
-                <li>管理者またはBotによる注意・警告の通知</li>
-                <li>一定期間のロール剥奪、またはボイスチャンネルへの接続制限</li>
-                <li>サーバーからのキック、または永久追放（BAN）</li>
-            </ol>
-            <p style="font-size: 0.95rem; color: #888; margin-top: 30px;">※本規約は、サーバー運営の状況に合わせて事前通知なく変更される場合があります。</p>
         </div>
-
-        <!-- ⌨️ コマンド解説 -->
         <div id="commands" class="tab-content">
             <h2>⌨️ 搭載機能＆コマンドガイド</h2>
-            <p>当サーバー専用のオリジナルBotが提供する便利なコマンドの一覧です。テキストチャンネルに直接入力して使用できます。</p>
-            
             <div class="code-block">
                 <strong>💡 /status （ステータス確認）</strong><br>
-                ➔ あなたがこれまでに積み上げてきた「合計作業時間」と、現在の「レベル」をカード形式で表示します。次のレベルまでに必要な残り時間も一目で分かります。<br><br>
-                
+                ➔ 合計作業時間と現在のレベルをカード形式で表示します。<br><br>
                 <strong>🏆 /ranking （ランキング表示）</strong><br>
-                ➔ サーバー内の総合作業時間が長いユーザー上位10名をランキングで発表します。みんなで競い合い、お互いを高め合いましょう！<br><br>
-                
+                ➔ 作業時間が長いユーザー上位10名を表示します。<br><br>
                 <strong>🔔 /bump （バンプ通知タイマー）</strong><br>
-                ➔ コマンドを打った瞬間にお知らせメッセージを投稿し、ちょうど2時間後（120分後）にメンションなしで「BUMPの時間だよ！」とお知らせします。
+                ➔ 2時間後に自動で「BUMPの時間だよ！」とお知らせします。<br><br>
+                <strong>⏱️ /pomodoro （ポモドーロ開始）</strong><br>
+                ➔ 25分の集中時間と5分の休憩時間をセットで管理・通知するタイマーを個人用に始動します。<br>
+                （※10秒ごとに埋め込みボードの残り時間と進捗ゲージが自動で書き換わります）<br><br>
+                <strong>⏹️ /pomo_stop （ポモドーロ停止）</strong><br>
+                ➔ 実行中のポモドーロタイマーをその場で強制終了します。<br><br>
+                <strong>📊 /server_stats （サーバー統計）</strong><br>
+                ➔ サーバー全体の登録人数や累計勉強時間を確認できます。<br><br>
+                <strong>🎲 /dice （サイコロ）</strong><br>
+                ➔ 息抜きや、勉強の目標ページを決める際にサイコロを振ることができます。
             </div>
         </div>
-
-        <!-- ❓ よくある質問 -->
         <div id="faq" class="tab-content">
             <h2>❓ よくある質問（FAQ）</h2>
-            <p>サーバーを利用する上で、メンバーから多く寄せられる質問と解決方法をまとめています。</p>
-            
             <div class="faq-item">
                 <p class="faq-question">Q. ボイスチャンネルに入っても作業時間が記録されません。</p>
-                <p class="faq-answer">A. Botは「接続した時間」から「切断した時間」の差分を計測しています。1分未満の短い接続は記録されませんのでご注意ください。また、Botがオフライン（再起動中など）の間の時間は記録されません。</p>
+                <p class="faq-answer">A. 接続から切断までの差分を計測しています。1分未満の短い接続は記録されません。</p>
             </div>
-            
             <div class="faq-item">
-                <p class="faq-question">Q. 自分専用の作業個室（カフェルーム）はどうやって消すのですか？</p>
-                <p class="faq-answer">A. 部屋の中のメンバーが全員退出（0人）すると、Botがそれを検知して自動的に部屋を消去します。手動で消す必要はありません。また、消し忘れを防ぐために作成から24時間が経過した部屋も自動でクローズされます。</p>
-            </div>
-
-            <div class="faq-item">
-                <p class="faq-question">Q. 計算クイズ（アカウント認証）が難しくて解けません、またはエラーになります。</p>
-                <p class="faq-answer">A. ページ内のクイズは単純な足し算です。もし「タイムアウトしました」と出た場合やうまく反応しない場合は、一度Discordに戻り、認証パネルのボタンを押し直してもう一度挑戦してみてください。</p>
+                <p class="faq-question">Q. カフェルーム（個室）は自動で消えますか？</p>
+                <p class="faq-answer">A. はい、全員が退出して0人になると自動消滅します。また、作成から24時間経過した部屋も自動で消去されます。</p>
             </div>
         </div>
-
-        <!-- 🔒 認証ページ -->
         <div id="verify" class="tab-content">
             <h2>🔒 サーバー認証テスト</h2>
             {% if user_id and user_id != "HOME" %}
