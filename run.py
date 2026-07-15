@@ -66,6 +66,8 @@ vc_start_times = {}
 room_counter = 1      
 active_rooms = {}     
 
+active_bump_timers = {}
+
 # 🔑 認証用View
 class VerificationView(View):
     def __init__(self):
@@ -132,10 +134,9 @@ async def on_ready():
     except Exception as e:
         print(f"同期エラー: {e}")
 
-# 📝 【新規追加】チャンネルが作成されたときのログ検知
+# 📝 チャンネルが作成されたときのログ検知
 @bot.event
 async def on_guild_channel_create(channel):
-    # 作成されたのが指定カテゴリ内のボイスチャンネルの場合
     if channel.category_id == CATEGORY_ID and isinstance(channel, discord.VoiceChannel):
         print(f"【ログ】ボイスチャンネルが作成されました: {channel.name} (ID: {channel.id})")
 
@@ -194,19 +195,33 @@ async def check_room_expiry():
             active_rooms.pop(r_id, None)
         await asyncio.sleep(60)
 
-# 📢 【新規追加】BUMP通知コマンド
+# 📢 BUMP通知コマンド
 @bot.tree.command(name="bump", description="BUMPの2時間後通知タイマーをセットします")
 async def bump(interaction: discord.Interaction):
-    await interaction.response.send_message("「/bump」を実行しました！2時間後にこのチャンネルで通知します。")
+    channel_id = interaction.channel_id
     
-    # 2時間（7200秒）待機するバックグラウンドタスク
-    async def bump_timer(channel_id):
+    if channel_id in active_bump_timers:
+        await interaction.response.send_message("⚠️ このチャンネルでは既にBUMPタイマーが作動中です！", ephemeral=True)
+        return
+    
+    await interaction.response.send_message("BUMPタイマーをセットしました！", ephemeral=True)
+    
+    embed = discord.Embed(
+        title="🔔 BUMPタイマー始動",
+        description="BUMPの実行を検知しました！\nこれより**2時間後（120分後）**に自動でこのチャンネルにお知らせします。",
+        color=0x4ab3e3
+    )
+    await interaction.channel.send(embed=embed)
+    
+    async def bump_timer(cid):
         await asyncio.sleep(7200)
-        channel = bot.get_channel(channel_id)
+        channel = bot.get_channel(cid)
         if channel:
             await channel.send("⏳ BUMPの時間だよ！")
+        active_bump_timers.pop(cid, None)
             
-    bot.loop.create_task(bump_timer(interaction.channel_id))
+    task = bot.loop.create_task(bump_timer(channel_id))
+    active_bump_timers[channel_id] = task
 
 @bot.tree.command(name="setup_verify", description="認証パネルを設置します")
 @app_commands.checks.has_permissions(administrator=True)
@@ -289,55 +304,120 @@ HTML_TEMPLATE = """
         .tab-content.active { display: block; animation: fadeIn 0.4s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         h2 { font-size: 1.6rem; border-bottom: 2px solid var(--accent-color); padding-bottom: 10px; margin-top: 0; margin-bottom: 25px; color: #3a3a3a; }
-        p { margin: 15px 0; font-size: 1.05rem; }
-        ul { padding-left: 20px; }
-        li { margin-bottom: 10px; }
+        h3 { font-size: 1.25rem; color: var(--main-color); margin-top: 30px; margin-bottom: 10px; }
+        p { margin: 15px 0; font-size: 1.05rem; text-align: justify; }
+        ul, ol { padding-left: 20px; }
+        li { margin-bottom: 12px; font-size: 1.02rem; }
         .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 25px; }
         .feature-card { background-color: var(--bg-color); padding: 20px; border-radius: 18px; border: 1px solid rgba(0,0,0,0.03); }
         .feature-card strong { color: var(--main-color); font-size: 1.1rem; }
         .quiz-container { background: #fffafa; padding: 30px; border-radius: 20px; margin-top: 25px; text-align: center; border: 2px dashed var(--main-color); }
         .quiz-input { font-family: monospace; font-size: 1.4rem; padding: 8px; width: 100px; text-align: center; border-radius: 12px; border: 2px solid var(--accent-color); outline: none; margin-bottom: 15px; }
         .btn-submit { display: block; margin: 10px auto 0 auto; background-color: var(--main-color); color: white; border: none; padding: 12px 35px; border-radius: 25px; cursor: pointer; font-family: 'Shippori Mincho', serif; font-weight: bold; font-size: 1rem; }
-        .code-block { background: #fdfaf6; padding: 20px; border-radius: 16px; border-left: 4px solid var(--main-color); font-family: monospace; font-size: 0.95rem; overflow-x: auto; }
+        .code-block { background: #fdfaf6; padding: 20px; border-radius: 16px; border-left: 4px solid var(--main-color); font-family: monospace; font-size: 0.95rem; overflow-x: auto; line-height: 1.7; }
+        .faq-item { margin-bottom: 25px; border-bottom: 1px dashed var(--accent-color); padding-bottom: 15px; }
+        .faq-question { font-weight: bold; color: var(--text-color); font-size: 1.1rem; margin-bottom: 5px; }
+        .faq-answer { color: #666; font-size: 1rem; }
     </style>
 </head>
 <body>
     <header>
-        <h1>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .</h1>
-        <p class="subtitle">中高生・受験生のための、ゆるやか作業スペース</p>
+        <h1>𝖼|̅|𝗂𝗅𝗅 𝗓𝗈𝗇 .</h1>
+        <p class="subtitle">中高生・受験生のための、ゆるやかオンライン自習室</p>
     </header>
     <div class="tab-menu">
-        <button class="tab-btn active" onclick="openTab('home')">ホーム</button>
+        <button class="tab-btn active" onclick="openTab('home')">コンセプト</button>
         <button class="tab-btn" onclick="openTab('rules')">利用規約</button>
-        <button class="tab-btn" onclick="openTab('contact')">問い合わせ</button>
-        <button class="tab-btn" onclick="openTab('commands')">コマンド確認</button>
+        <button class="tab-btn" onclick="openTab('commands')">コマンド解説</button>
+        <button class="tab-btn" onclick="openTab('faq')">よくある質問</button>
         <button class="tab-btn" id="verify-tab-nav" onclick="openTab('verify')">アカウント認証</button>
     </div>
     <div class="container">
+        <!-- 🏠 ホーム（コンセプト） -->
         <div id="home" class="tab-content active">
-            <h2>ようこそ、ひと息つける作業場へ。</h2>
-            <p>「𝖼𝗁ぃll 𝗓𝗈𝗇 .」は、勉強や作業を進めるためのコミュニティです。</p>
+            <h2>ようこそ、ひと息つける、あなたの作業場へ。</h2>
+            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .」は、日々の勉強や創作、日課の作業など、それぞれの目標に向かって進む人たちのための、静かで温かいオンライン自習室です。</p>
+            <p>1人だとなかなか集中が続かない、だけど誰かと賑やかに話しながらだと手が止まってしまう。そんな中高生や受験生の皆さんが、お互いの静かな気配を感じながら、適度な距離感でモチベーションを維持できる場所を目指しています。</p>
+            
+            <h3>🌱 空間のこだわり</h3>
             <div class="feature-grid">
-                <div class="feature-card"><p><strong>01. 音のない集中スペース</strong></p><p style="font-size:0.95rem;">文字とタイマーだけの静かな部屋。</p></div>
-                <div class="feature-card"><p><strong>02. 気配を感じる作業VC</strong></p><p style="font-size:0.95rem;">作業音がかすかに聞こえる空間です。</p></div>
+                <div class="feature-card">
+                    <p><strong>🕒 自分のペースで、着実に</strong></p>
+                    <p style="font-size:0.95rem; line-height:1.6;">ボイスチャンネルに接続するだけで、Botがあなたの作業時間を1分単位で自動的に計測・記録します。日々の努力の積み重ねがレベルという形で可視化されます。</p>
+                </div>
+                <div class="feature-card">
+                    <p><strong>🚪 集中を邪魔しない個室制度</strong></p>
+                    <p style="font-size:0.95rem; line-height:1.6;">ボタン1つで「自分専用の作業VC（カフェルーム）」を設置できます。不要になったら自動で消滅するため、面倒な設定や誰かとバッティングする心配もありません。</p>
+                </div>
             </div>
+            <p style="margin-top: 30px;">学校帰りにちょっとだけ寄って帰るカフェのように。あるいは、試験前の静まり返った図書館のように。あなたの心地よいペースで、この場所を自由に活用してください。</p>
         </div>
+
+        <!-- 📜 利用規約 -->
         <div id="rules" class="tab-content">
-            <h2>コミュニティのたいせつな約束</h2>
+            <h2>📜 コミュニティ・ガイドライン（利用規約）</h2>
+            <p>すべてのメンバーが心地よく、安心して勉強や作業に集中できるよう、以下のルールを定めています。当サーバーに参加される際は、以下の規約を遵守してください。</p>
+            
+            <h3>第1条（基本の心がけ）</h3>
+            <p>当コミュニティは、お互いに高め合いながら作業を行う場所です。他人の勉強や集中を妨げる行為、過度に騒がしい言動、相手を不快にさせる言葉遣いは慎み、常に思いやりを持って行動してください。</p>
+
+            <h3>第2条（禁止事項）</h3>
             <ul>
-                <li>思いやりのある言葉遣い</li>
-                <li>個人情報の保護</li>
+                <li><strong>スパムおよび荒らし行為：</strong> 同一または類似するテキストの連投、ボイスチャンネルへの執拗な出入り、Botシステムへの過剰な負荷をかける行為。</li>
+                <li><strong>他者への迷惑行為：</strong> 勉強中のユーザーに対する無理な雑談の強要、不快なメンション送信、マイクを通じた不快な生活音・雑音の垂れ流し。</li>
+                <li><strong>安全を脅かす行為：</strong> 個人情報（本名、学校名、住所、電話番号、LINE等の外部連絡先）の公開や聞き出し、他者への誹謗中傷、公序良俗に反するコンテンツの共有。</li>
+                <li><strong>アカウント認証の悪用：</strong> 複数アカウントを用いたシステム操作、計算クイズの不正攻略、認証プログラムの不適切な利用。</li>
             </ul>
+
+            <h3>第3条（違反への対応について）</h3>
+            <p>上記の規約に違反する行為が見受けられた場合、管理者の裁量により、以下の措置を実施します。</p>
+            <ol>
+                <li>管理者またはBotによる注意・警告の通知</li>
+                <li>一定期間のロール剥奪、またはボイスチャンネルへの接続制限</li>
+                <li>サーバーからのキック、または永久追放（BAN）</li>
+            </ol>
+            <p style="font-size: 0.95rem; color: #888; margin-top: 30px;">※本規約は、サーバー運営の状況に合わせて事前通知なく変更される場合があります。</p>
         </div>
-        <div id="contact" class="tab-content"><h2>お問い合わせ</h2><p>サーバー内の窓口チャンネルまでどうぞ。</p></div>
+
+        <!-- ⌨️ コマンド解説 -->
         <div id="commands" class="tab-content">
-            <h2>コマンドガイド</h2>
+            <h2>⌨️ 搭載機能＆コマンドガイド</h2>
+            <p>当サーバー専用のオリジナルBotが提供する便利なコマンドの一覧です。テキストチャンネルに直接入力して使用できます。</p>
+            
             <div class="code-block">
-                <strong>/status</strong> ➔ 自分の現在のレベルや合計時間を確認<br>
-                <strong>/ranking</strong> ➔ サーバー内の作業時間ランキングTOP10を表示<br>
-                <strong>/bump</strong> ➔ BUMPの2時間後通知タイマーをセット
+                <strong>💡 /status （ステータス確認）</strong><br>
+                ➔ あなたがこれまでに積み上げてきた「合計作業時間」と、現在の「レベル」をカード形式で表示します。次のレベルまでに必要な残り時間も一目で分かります。<br><br>
+                
+                <strong>🏆 /ranking （ランキング表示）</strong><br>
+                ➔ サーバー内の総合作業時間が長いユーザー上位10名をランキングで発表します。みんなで競い合い、お互いを高め合いましょう！<br><br>
+                
+                <strong>🔔 /bump （バンプ通知タイマー）</strong><br>
+                ➔ コマンドを打った瞬間にお知らせメッセージを投稿し、ちょうど2時間後（120分後）にメンションなしで「BUMPの時間だよ！」とお知らせします。
             </div>
         </div>
+
+        <!-- ❓ よくある質問 -->
+        <div id="faq" class="tab-content">
+            <h2>❓ よくある質問（FAQ）</h2>
+            <p>サーバーを利用する上で、メンバーから多く寄せられる質問と解決方法をまとめています。</p>
+            
+            <div class="faq-item">
+                <p class="faq-question">Q. ボイスチャンネルに入っても作業時間が記録されません。</p>
+                <p class="faq-answer">A. Botは「接続した時間」から「切断した時間」の差分を計測しています。1分未満の短い接続は記録されませんのでご注意ください。また、Botがオフライン（再起動中など）の間の時間は記録されません。</p>
+            </div>
+            
+            <div class="faq-item">
+                <p class="faq-question">Q. 自分専用の作業個室（カフェルーム）はどうやって消すのですか？</p>
+                <p class="faq-answer">A. 部屋の中のメンバーが全員退出（0人）すると、Botがそれを検知して自動的に部屋を消去します。手動で消す必要はありません。また、消し忘れを防ぐために作成から24時間が経過した部屋も自動でクローズされます。</p>
+            </div>
+
+            <div class="faq-item">
+                <p class="faq-question">Q. 計算クイズ（アカウント認証）が難しくて解けません、またはエラーになります。</p>
+                <p class="faq-answer">A. ページ内のクイズは単純な足し算です。もし「タイムアウトしました」と出た場合やうまく反応しない場合は、一度Discordに戻り、認証パネルのボタンを押し直してもう一度挑戦してみてください。</p>
+            </div>
+        </div>
+
+        <!-- 🔒 認証ページ -->
         <div id="verify" class="tab-content">
             <h2>🔒 サーバー認証テスト</h2>
             {% if user_id and user_id != "HOME" %}
@@ -370,7 +450,7 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="Discordのボタンからアクセスすると、ここにクイズが表示されます。")
+    return render_template_string(HTML_TEMPLATE, username="ゲスト", user_id="HOME", num1=0, num2=0, msg="Discordの認証パネルのボタンからアクセスすると、ここに計算クイズが表示されます。")
 
 @app.route('/callback')
 def callback():
