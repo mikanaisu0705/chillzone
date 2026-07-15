@@ -23,8 +23,12 @@ ROLE_ID = 1526589486207733770
 CLIENT_ID = '1526464758927200326' 
 REDIRECT_URI = 'https://chillzone-5oxh.onrender.com/callback'
 
-# 📂 専用個室を作るカテゴリのID （最新のIDに更新しました！）
+# 📂 専用個室を作るカテゴリのID
 CATEGORY_ID = 1526720938517856297  
+
+# 📢 【追加】お疲れ様メッセージを自動送信するテキストチャンネルのID
+# ※お疲れ様通知を送りたいテキストチャンネルのIDに書き換えてください。
+CONGRATS_CHANNEL_ID = 1526575335460573315 # デフォルトではサーバーのシステム等に合わせるか、適宜書き換えてください
 
 # ==========================================
 # 💾 データ保存用システム（JSON）
@@ -81,8 +85,6 @@ room_counter = 1
 active_rooms = {}     
 
 active_bump_timers = {}
-# ポモドーロタイマーの実行情報
-# { ユーザーID: { "task": タスク, "message": メッセージ, "original_nick": 元のニックネーム } }
 active_pomo_timers = {}
 
 # ⏱️ Bot起動時刻の記録
@@ -191,11 +193,7 @@ async def on_ready():
 async def on_message(message):
     if message.author.bot:
         return
-        
-    # コマンドの処理を優先して通す
     await bot.process_commands(message)
-    
-    # メッセージのトリガーをチェックして自動返答
     responses = load_responses()
     content = message.content.strip()
     if content in responses:
@@ -207,41 +205,122 @@ async def on_guild_channel_create(channel):
     if channel.category_id == CATEGORY_ID and isinstance(channel, discord.VoiceChannel):
         print(f"【ログ】ボイスチャンネルが作成されました: {channel.name} (ID: {channel.id})")
 
+# ⏰ ボイスステート監視（作業時間集計 & お疲れ様メッセージ送信 & 継続日数管理）
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot:
         return
     user_id = str(member.id)
     
+    # 1. VCに参加した時刻を記録
     if before.channel is None and after.channel is not None:
         vc_start_times[user_id] = time.time()
+        
+    # 2. VCから退出（または完全に切断）した時の計算
     elif before.channel is not None and after.channel is None:
         start_time = vc_start_times.pop(user_id, None)
         if start_time:
             duration = time.time() - start_time
             minutes_earned = round(duration / 60, 1)
-            if minutes_earned > 0:
+            
+            # 1分以上の作業のみ記録
+            if minutes_earned >= 1.0:
                 stats = load_stats()
+                
+                # 新規ユーザーデータ初期化
                 if user_id not in stats:
-                    stats[user_id] = {"username": member.name, "total_minutes": 0.0, "level": 1}
+                    stats[user_id] = {
+                        "username": member.name, 
+                        "total_minutes": 0.0, 
+                        "level": 1,
+                        "streak": 0,
+                        "last_active_date": "",
+                        "weekly_log": {}
+                    }
                 
-                # 累計時間の更新
-                stats[user_id]["total_minutes"] = round(stats[user_id]["total_minutes"] + minutes_earned, 1)
-                stats[user_id]["username"] = member.name
-                
-                # 今日の目標用の「本日勉強時間」の更新
+                user_data = stats[user_id]
                 today_str = datetime.now().strftime("%Y-%m-%d")
-                if stats[user_id].get("last_active_date") != today_str:
-                    stats[user_id]["today_minutes"] = 0.0
-                    stats[user_id]["last_active_date"] = today_str
-                    
-                stats[user_id]["today_minutes"] = round(stats[user_id].get("today_minutes", 0.0) + minutes_earned, 1)
+                yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
                 
-                new_level, _ = calculate_level(int(stats[user_id]["total_minutes"]))
-                stats[user_id]["level"] = new_level
+                # 累計時間の加算
+                user_data["total_minutes"] = round(user_data["total_minutes"] + minutes_earned, 1)
+                user_data["username"] = member.name
+                
+                # 今日の目標用の本日の時間更新
+                if user_data.get("last_active_date") != today_str:
+                    user_data["today_minutes"] = 0.0
+                user_data["today_minutes"] = round(user_data.get("today_minutes", 0.0) + minutes_earned, 1)
+                
+                # 📅 直近1週間の学習ログ（weekly_log）の更新
+                if "weekly_log" not in user_data:
+                    user_data["weekly_log"] = {}
+                user_data["weekly_log"][today_str] = round(user_data["weekly_log"].get(today_str, 0.0) + minutes_earned, 1)
+                
+                # 1週間以上前の古いログをJSON肥大化防止のため削除
+                cutoff_date = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
+                user_data["weekly_log"] = {d: m for d, m in user_data["weekly_log"].items() if d >= cutoff_date}
+                
+                # 🔥 連続自習ストリーク（ログイン日数）の計算
+                last_active = user_data.get("last_active_date", "")
+                current_streak = user_data.get("streak", 0)
+                
+                if last_active == yesterday_str:
+                    # 昨日やっていて、今日初めての勉強ならストリーク+1
+                    if current_streak == 0:
+                        user_data["streak"] = 1
+                    else:
+                        user_data["streak"] += 1
+                elif last_active == today_str:
+                    # すでに今日勉強している場合はストリーク維持
+                    pass
+                else:
+                    # 昨日やっていなければストリークは1にリセット（初めての場合は1）
+                    user_data["streak"] = 1
+                
+                user_data["last_active_date"] = today_str
+                
+                # レベルの再計算
+                new_level, _ = calculate_level(int(user_data["total_minutes"]))
+                user_data["level"] = new_level
+                
                 save_stats(stats)
-                print(f"【記録】{member.name} が {minutes_earned} 分作業しました。（本日累計: {stats[user_id]['today_minutes']} 分）")
+                print(f"【記録】{member.name} が {minutes_earned} 分作業しました。（本日累計: {user_data['today_minutes']} 分）")
+                
+                # 🎉 【追加機能】お疲れ様お祝いメッセージの自動送信
+                congrats_channel = bot.get_channel(CONGRATS_CHANNEL_ID)
+                if congrats_channel:
+                    goal_min = user_data.get("daily_goal", 0)
+                    today_total = user_data["today_minutes"]
+                    
+                    # 目標を達成したかどうかの判定
+                    is_goal_achieved = goal_min > 0 and today_total >= goal_min
+                    
+                    embed = discord.Embed(
+                        title="📝 ワークスペース退出ログ",
+                        description=f"{member.mention} さん、作業お疲れ様でした！✨",
+                        color=0x4ab3e3 if is_goal_achieved else 0xe8a7a1
+                    )
+                    embed.add_field(name="⏱️ 今回の作業時間", value=f"**{minutes_earned} 分**", inline=True)
+                    embed.add_field(name="📅 本日の累計", value=f"**{today_total} 分**", inline=True)
+                    embed.add_field(name="🔥 連続継続日数", value=f"**{user_data['streak']} 日連続**", inline=True)
+                    
+                    if is_goal_achieved:
+                        embed.add_field(
+                            name="🎉 目標達成！", 
+                            value=f"本日の目標（{goal_min}分）を見事突破しました！素晴らしい集中力です！👏", 
+                            inline=False
+                        )
+                    elif goal_min > 0:
+                        embed.add_field(
+                            name="🎯 今日の目標まであと", 
+                            value=f"残り **{round(max(0.0, goal_min - today_total), 1)} 分** です！自分のペースで進めましょう。", 
+                            inline=False
+                        )
+                        
+                    embed.set_thumbnail(url=member.display_avatar.url)
+                    await congrats_channel.send(embed=embed)
 
+    # 3. 誰もいなくなった個室（カフェルーム）の自動削除
     if before.channel and before.channel.id in active_rooms:
         if len(before.channel.members) == 0:
             try:
@@ -277,7 +356,6 @@ async def check_room_expiry():
 @bot.tree.command(name="bump", description="BUMPの2時間後通知タイマーをセットします")
 async def bump(interaction: discord.Interaction):
     channel_id = interaction.channel_id
-    
     if channel_id in active_bump_timers:
         await interaction.response.send_message("⚠️ このチャンネルでは既にBUMPタイマーが作動中です！", ephemeral=True)
         return
@@ -333,7 +411,14 @@ async def goal(interaction: discord.Interaction, minutes: int):
     stats = load_stats()
     
     if user_id not in stats:
-        stats[user_id] = {"username": interaction.user.name, "total_minutes": 0.0, "level": 1}
+        stats[user_id] = {
+            "username": interaction.user.name, 
+            "total_minutes": 0.0, 
+            "level": 1,
+            "streak": 0,
+            "last_active_date": "",
+            "weekly_log": {}
+        }
         
     today_str = datetime.now().strftime("%Y-%m-%d")
     stats[user_id]["daily_goal"] = minutes
@@ -344,29 +429,46 @@ async def goal(interaction: discord.Interaction, minutes: int):
     save_stats(stats)
     await interaction.response.send_message(f"🎯 今日の作業目標を **{minutes}分** に設定しました！無理せず自分のペースで頑張りましょう！")
 
-# 📊 ステータス確認（今日の目標達成率表示付き）
-@bot.tree.command(name="status", description="自分の作業時間とレベル、今日の目標を確認します")
+# 📊 【大幅強化版】ステータス確認（1週間グラフ & ストリーク追加）
+@bot.tree.command(name="status", description="自分の作業時間、目標達成率、1週間のグラフと継続日数を確認します")
 async def status(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     stats = load_stats()
     
     if user_id not in stats:
-        stats[user_id] = {"username": interaction.user.name, "total_minutes": 0.0, "level": 1}
+        stats[user_id] = {
+            "username": interaction.user.name, 
+            "total_minutes": 0.0, 
+            "level": 1,
+            "streak": 0,
+            "last_active_date": "",
+            "weekly_log": {}
+        }
         
     user_data = stats[user_id]
     total_min = user_data["total_minutes"]
     current_level, next_remain = calculate_level(int(total_min))
     
-    embed = discord.Embed(title=f"📊 {interaction.user.name} さんの作業データ", color=0xe8a7a1)
-    embed.add_field(name="👑 現在のレベル", value=f"**Lv. {current_level}**", inline=False)
-    embed.add_field(name="⏱️ 累計作業時間", value=f"{total_min} 分", inline=True)
-    embed.add_field(name="✨ 次のLvまであと", value=f"{round(next_remain, 1)} 分", inline=True)
+    embed = discord.Embed(title=f"📊 {interaction.user.name} さんの作業スタッツ", color=0xe8a7a1)
+    
+    # 連続自習ストリークのチェック（昨日・今日ともやっていなければ0日にリセット表示するロジック）
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    last_active = user_data.get("last_active_date", "")
+    
+    if last_active != today_str and last_active != yesterday_str:
+        streak_days = 0
+    else:
+        streak_days = user_data.get("streak", 0)
+        
+    # 基本情報
+    embed.add_field(name="👑 現在のレベル", value=f"**Lv. {current_level}**", inline=True)
+    embed.add_field(name="🔥 連続自習記録", value=f"**{streak_days} 日連続**", inline=True)
+    embed.add_field(name="⏱️ 累計作業時間", value=f"**{total_min} 分**", inline=True)
+    embed.add_field(name="✨ 次のLvまであと", value=f"`{round(next_remain, 1)}` 分", inline=True)
     
     # 🎯 今日の目標進捗の表示
-    today_str = datetime.now().strftime("%Y-%m-%d")
     goal_min = user_data.get("daily_goal", 0)
-    
-    # 日付が変わっていたら今日の進捗は0とみなす
     if user_data.get("last_active_date") != today_str:
         today_done = 0.0
     else:
@@ -377,9 +479,32 @@ async def status(interaction: discord.Interaction):
         bar = make_progress_bar(percent)
         goal_text = f"**{today_done}分** / **{goal_min}分**\n{bar} ({percent}%)"
     else:
-        goal_text = "設定されていません（`/goal` でセットできます）"
+        goal_text = "未設定（`/goal` でセットできます）"
         
     embed.add_field(name="🎯 本日の学習目標", value=goal_text, inline=False)
+    
+    # 📅 直近1週間の簡易グラフ（weekly_logから生成）
+    weekly_log = user_data.get("weekly_log", {})
+    graph_text = ""
+    weekday_labels = ["月", "火", "水", "木", "金", "土", "日"]
+    
+    # 直近7日間の日付を取得
+    today = datetime.now()
+    for i in range(6, -1, -1):
+        target_date = today - timedelta(days=i)
+        date_key = target_date.strftime("%Y-%m-%d")
+        wday_label = weekday_labels[target_date.weekday()]
+        
+        minutes_done = weekly_log.get(date_key, 0.0)
+        
+        # グラフ用の絵文字ゲージの数（例: 30分ごとに🟩1個、最大5個まで）
+        block_count = min(int(minutes_done // 30), 5)
+        blocks = "🟩" * block_count if block_count > 0 else "⬜"
+        
+        graph_text += f"`{target_date.strftime('%m/%d')}({wday_label})` : {blocks} *({minutes_done}分)*\n"
+        
+    embed.add_field(name="📊 直近1週間の作業推移 (30分=🟩)", value=graph_text, inline=False)
+    
     embed.set_thumbnail(url=interaction.user.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
@@ -474,8 +599,6 @@ async def report(interaction: discord.Interaction, reason: str, user: discord.Me
         return
         
     await interaction.response.defer(ephemeral=True)
-    
-    # サーバー内で「管理者（Administrator）」権限を持つメンバーを検索（Botを除く）
     admins = [m for m in guild.members if m.guild_permissions.administrator and not m.bot]
     
     if not admins:
@@ -500,7 +623,6 @@ async def report(interaction: discord.Interaction, reason: str, user: discord.Me
             await admin.send(embed=embed)
             sent_count += 1
         except discord.Forbidden:
-            # DMが閉じられている管理者はスルー
             pass
             
     if sent_count > 0:
@@ -537,7 +659,6 @@ async def worda(interaction: discord.Interaction):
     for trigger, response in responses.items():
         list_text += f"• **{trigger}** ➔ {response}\n"
         
-    # 文字制限（4096文字）対策
     if len(list_text) > 4000:
         list_text = list_text[:4000] + "\n...他多数"
         
@@ -545,20 +666,17 @@ async def worda(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# ⏱️ 進化版ポモドーロタイマー（集中モード・ニックネーム連携）
+# ⏱️ ポモドーロタイマー（集中モード・ニックネーム連携）
 # ==========================================
 
-# 進捗バー生成関数
 def make_progress_bar(percent, size=10):
     filled = int(round(size * percent / 100))
     bar = "🟥" * filled + "⬜" * (size - filled)
     return bar
 
-# ニックネームを変更する安全関数
 async def change_user_nickname(member, suffix):
     try:
         base_name = member.display_name
-        # すでにタグが付いている場合は元の名前にクリアする
         for tag in [" [✍️集中中]", " [💤休憩中]"]:
             if base_name.endswith(tag):
                 base_name = base_name[:-len(tag)]
@@ -571,21 +689,16 @@ async def change_user_nickname(member, suffix):
         else:
             await member.edit(nick=base_name)
     except discord.Forbidden:
-        # 権限がない（サーバーオーナーやBotより上の権限の人）はエラーを出さずスルー
         pass
 
-@bot.tree.command(name="pomodoro", description="ポモドーロタイマーを開始します（ニックネームに[✍️集中中]が自動付与されます）")
+@bot.tree.command(name="pomodoro", description="ポモドーロタイマーを開始します")
 async def pomodoro(interaction: discord.Interaction):
     user_id = interaction.user.id
-    
     if user_id in active_pomo_timers:
-        await interaction.response.send_message("⚠️ すでにあなたのポモドーロタイマーが作動中です！一時停止するか、終了させてから再度行ってください。", ephemeral=True)
+        await interaction.response.send_message("⚠️ すでにあなたのポモドーロタイマーが作動中です！", ephemeral=True)
         return
         
-    # 開始前のニックネームを取得してキープ
     original_nick = interaction.user.display_name
-    
-    # ニックネームを「[✍️集中中]」に変更
     await change_user_nickname(interaction.user, "[✍️集中中]")
     
     initial_embed = discord.Embed(
@@ -601,7 +714,6 @@ async def pomodoro(interaction: discord.Interaction):
     
     async def pomo_timer_task():
         try:
-            # 1. 集中フェーズ (25分 = 1500秒)
             total_focus = 1500
             interval = 10
             
@@ -624,7 +736,6 @@ async def pomodoro(interaction: discord.Interaction):
                 except discord.NotFound:
                     return
 
-            # 休憩フェーズに入る前の処理：ニックネームを「[💤休憩中]」に変更
             await change_user_nickname(interaction.user, "[💤休憩中]")
 
             finish_focus_embed = discord.Embed(
@@ -641,7 +752,6 @@ async def pomodoro(interaction: discord.Interaction):
             except discord.NotFound:
                 pass
 
-            # 2. 休憩フェーズ (5分 = 300秒)
             total_break = 300
             for elapsed in range(0, total_break, interval):
                 await asyncio.sleep(interval)
@@ -662,7 +772,6 @@ async def pomodoro(interaction: discord.Interaction):
                 except discord.NotFound:
                     return
 
-            # ニックネームを完全に戻す
             await change_user_nickname(interaction.user, None)
 
             all_done_embed = discord.Embed(
@@ -677,9 +786,7 @@ async def pomodoro(interaction: discord.Interaction):
                 pass
                 
         except asyncio.CancelledError:
-            # キャンセル（強制終了）時も、元のニックネームに戻す
             await change_user_nickname(interaction.user, None)
-            
             cancel_embed = discord.Embed(
                 title="⏹️ タイマー停止",
                 description=f"{interaction.user.mention} さんのポモドーロタイマーは強制停止されました。",
@@ -699,18 +806,15 @@ async def pomodoro(interaction: discord.Interaction):
         "original_nick": original_nick
     }
 
-# ポモドーロタイマーを強制ストップするコマンド
 @bot.tree.command(name="pomo_stop", description="現在実行中のポモドーロタイマーを強制終了します")
 async def pomo_stop(interaction: discord.Interaction):
     user_id = interaction.user.id
-    
     if user_id not in active_pomo_timers:
         await interaction.response.send_message("❌ 現在実行中のポモドーロタイマーはありません。", ephemeral=True)
         return
         
     pomo_info = active_pomo_timers.pop(user_id)
     pomo_info["task"].cancel()
-    
     await interaction.response.send_message("⏹️ ポモドーロタイマーを停止させました。ゆっくり体を休めてくださいね！")
 
 # ==========================================
@@ -760,7 +864,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <header>
-        <h1>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .</h1>
+        <h1>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈 .</h1>
         <p class="subtitle">中高生・受験生のための、ゆるやかオンライン自習室</p>
     </header>
     <div class="tab-menu">
@@ -773,7 +877,7 @@ HTML_TEMPLATE = """
     <div class="container">
         <div id="home" class="tab-content active">
             <h2>ようこそ、ひと息つける、あなたの作業場へ。</h2>
-            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .」は、日々の勉強や創作、日課 of 作業など、それぞれの目標に向かって進む人たちのための、静かで温かいオンライン自習室です。</p>
+            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈 .」は、日々の勉強や創作、日課 of 作業など、それぞれの目標に向かって進む人たちのための、静かで温かいオンライン自習室です。</p>
             <p>1人だとなかなか集中が続かない、だけど誰かと賑やかに話しながらだと手が止まってしまう。そんな中高生や受験生の皆さんが、お互いの静かな気配を感じながら、適度な距離感でモチベーションを維持できる場所を目指しています。</p>
             <h3>🌱 空間のこだわり</h3>
             <div class="feature-grid">
@@ -803,7 +907,7 @@ HTML_TEMPLATE = """
             <h2>⌨️ 搭載機能＆コマンドガイド</h2>
             <div class="code-block">
                 <strong>💡 /status （ステータス確認）</strong><br>
-                ➔ 合計作業時間、現在のレベル、本日の学習目標進捗をカード形式で表示します。<br><br>
+                ➔ 合計作業時間、現在のレベル、本日の学習目標進捗、さらに【🔥連続自習日数】と【📊直近1週間のグラフ】を表示します。<br><br>
                 <strong>🎯 /goal [分] （本日の目標設定）</strong><br>
                 ➔ 今日の勉強目標時間を設定します。目標に対する％ゲージが `/status` に反映されます。<br><br>
                 <strong>🏆 /ranking （ランキング表示）</strong><br>
