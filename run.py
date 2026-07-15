@@ -23,8 +23,8 @@ ROLE_ID = 1526589486207733770
 CLIENT_ID = '1526464758927200326' 
 REDIRECT_URI = 'https://chillzone-5oxh.onrender.com/callback'
 
-# 📂 専用個室を作るカテゴリのID
-CATEGORY_ID = 1526576980198428715  
+# 📂 専用個室を作るカテゴリのID （最新のIDに更新しました！）
+CATEGORY_ID = 1526720938517856297  
 
 # ==========================================
 # 💾 データ保存用システム（JSON）
@@ -726,7 +726,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 . Official</title>
+    <title>𝖼𝗁𝗂𝗅𝗅 𝗓𝗈 . Official</title>
     <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;700&display=swap" rel="stylesheet">
     <style>
         :root { --bg-color: #f7f5f0; --main-color: #e8a7a1; --text-color: #4a4a4a; --card-bg: #ffffff; --accent-color: #ebd3c8; }
@@ -773,13 +773,13 @@ HTML_TEMPLATE = """
     <div class="container">
         <div id="home" class="tab-content active">
             <h2>ようこそ、ひと息つける、あなたの作業場へ。</h2>
-            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .」は、日々の勉強や創作、日課の作業など、それぞれの目標に向かって進む人たちのための、静かで温かいオンライン自習室です。</p>
+            <p>「𝖼𝗁𝗂𝗅𝗅 𝗓𝗈𝗇 .」は、日々の勉強や創作、日課 of 作業など、それぞれの目標に向かって進む人たちのための、静かで温かいオンライン自習室です。</p>
             <p>1人だとなかなか集中が続かない、だけど誰かと賑やかに話しながらだと手が止まってしまう。そんな中高生や受験生の皆さんが、お互いの静かな気配を感じながら、適度な距離感でモチベーションを維持できる場所を目指しています。</p>
             <h3>🌱 空間のこだわり</h3>
             <div class="feature-grid">
                 <div class="feature-card">
                     <p><strong>🕒 自分のペースで、着実に</strong></p>
-                    <p style="font-size:0.95rem; line-height:1.6;">ボイスチャンネルに接続するだけで、Botがあなたの作業時間を1分単位で自動的に計測・記録します。日々の努力の積み重ねがレベルという形で可視化されます。</p>
+                    <p style="font-size:0.95rem; line-height:1.6;">ボイスチャンネルに接続するだけで、Botがあなたの作業時間を1分単位で自動的に記録・計測します。日々の努力の積み重ねがレベルという形で可視化されます。</p>
                 </div>
                 <div class="feature-card">
                     <p><strong>🚪 集中を邪魔しない個室制度</strong></p>
